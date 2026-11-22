@@ -311,16 +311,26 @@ fn run_load(plugin: &mut Plugin, cid: &str) -> Result<(usize, String, Vec<Catalo
 }
 
 fn run_search(plugin: &mut Plugin, cid: &str, q: &CatalogQuery) -> Result<(usize, Vec<CatalogItem>), String> {
-    let payload = json!({
-        "text": q.text,
-        "category": q.category,
-        "color": q.color,
-        "max_width": q.max_width,
-        "max_depth": q.max_depth,
-        "max_height": q.max_height,
-        "offset": 0,
-        "limit": 120,
-    });
+    let mut map = serde_json::Map::new();
+    map.insert("text".into(), json!(q.text));
+    if let Some(category) = &q.category {
+        map.insert("category".into(), json!(category));
+    }
+    if let Some(color) = &q.color {
+        map.insert("color".into(), json!(color));
+    }
+    if let Some(w) = q.max_width {
+        map.insert("max_width".into(), json!(w));
+    }
+    if let Some(d) = q.max_depth {
+        map.insert("max_depth".into(), json!(d));
+    }
+    if let Some(h) = q.max_height {
+        map.insert("max_height".into(), json!(h));
+    }
+    map.insert("offset".into(), json!(0));
+    map.insert("limit".into(), json!(120));
+    let payload = Value::Object(map);
     let val = plugin.catalog_search(cid, payload).map_err(|e| e.message)?;
     let total = val["total"].as_u64().unwrap_or(0) as usize;
     let items = val["items"]
