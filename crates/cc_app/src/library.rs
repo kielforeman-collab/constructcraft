@@ -1125,7 +1125,7 @@ fn plugin_catalog_grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, ope
     ui.add_space(4.0);
     if items.is_empty() {
         centered(ui, |ui| {
-            ui.label(theme::muted(t!("lib-no-match")));
+            ui.label(theme::muted(t!("lib-none")));
         });
         return;
     }
@@ -1191,7 +1191,7 @@ fn plugin_catalog_grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, ope
 fn plugin_catalog_details(ui: &mut Ui, state: &mut AppState, lib: &mut Library) {
     let Some(id) = lib.catalog_selected.clone() else {
         centered(ui, |ui| {
-            ui.label(theme::muted(t!("lib-pick-prompt")));
+            ui.label(theme::muted(t!("lib-pick")));
         });
         return;
     };

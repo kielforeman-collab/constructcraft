@@ -216,8 +216,10 @@ pub(crate) fn load_thumbnail(ctx: &egui::Context, file: &Path) -> Option<egui::T
     if let Some(texture) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         return Some(texture);
     }
-    let icon = eframe::icon_data::from_png_bytes(&std::fs::read(file).ok()?).ok()?;
-    let image = egui::ColorImage::from_rgba_unmultiplied([icon.width as usize, icon.height as usize], &icon.rgba);
+    let bytes = std::fs::read(file).ok()?;
+    let decoded = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let size = [decoded.width() as usize, decoded.height() as usize];
+    let image = egui::ColorImage::from_rgba_unmultiplied(size, decoded.as_raw());
     let texture = ctx.load_texture(file.to_string_lossy(), image, egui::TextureOptions::LINEAR);
     ctx.data_mut(|d| d.insert_temp(id, texture.clone()));
     Some(texture)

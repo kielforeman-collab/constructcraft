@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.14.0-ikea.2] - 2026-11-22
+
+### Fixed
+
+- Plugin catalog `search` queries now omit unset optional filter fields instead of sending JSON `null` (which Lua received as truthy light userdata).
+- Component Library plugin catalog empty-state labels now use the existing `lib-none` and `lib-pick` translations.
+- Thumbnail loader (`home::load_thumbnail`) now decodes JPEG/WebP/GIF/BMP images in addition to PNG so plugin catalog JPEG thumbnails render.
+
 ## [0.14.0-ikea.1] - 2026-11-22
 
 ### Added
