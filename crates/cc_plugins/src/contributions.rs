@@ -597,6 +597,48 @@ pub struct FileAction {
     pub extensions: Vec<String>,
 }
 
+/// Most component catalog sources one plugin may declare (api 3).
+pub const MAX_CATALOGS: usize = 8;
+
+/// A `[[catalogs]]` entry of the manifest, as written (api 3).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogSpec {
+    /// Short identifier unique within the plugin (same rule as a plugin id).
+    pub id: String,
+    /// Tab label in the Component Library window; may be `%key%`.
+    pub label: String,
+    /// Optional description or attribution shown in the sidebar; may be `%key%`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+impl CatalogSpec {
+    pub(crate) fn check(&self) -> Result<(), String> {
+        if !crate::plugin::valid_id(&self.id) {
+            return Err(format!("id \"{}\": lowercase letters, digits and single underscores", self.id));
+        }
+        if self.label.trim().is_empty() || chars(&self.label) > MAX_LABEL {
+            return Err(format!("label: 1 to {MAX_LABEL} characters"));
+        }
+        if chars(&self.description) > MAX_DESCRIPTION {
+            return Err(format!("description: at most {MAX_DESCRIPTION} characters"));
+        }
+        Ok(())
+    }
+}
+
+/// A plugin's catalog source, ready to show in the Component Library (text
+/// resolved in the current language).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Catalog {
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub id: String,
+    pub label: String,
+    pub description: String,
+}
+
 /// The schema with each property's `title`, `description` and
 /// `enum_labels` passed through `resolve`.
 pub(crate) fn resolve_schema(schema: &Value, resolve: impl Fn(&str) -> String) -> Value {

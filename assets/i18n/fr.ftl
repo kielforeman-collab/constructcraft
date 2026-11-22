@@ -4123,3 +4123,9 @@ pform-json-unknown = Le formulaire n’a pas de champ { $name } : continuez en J
 pform-json-wrong = La valeur de { $name } ne convient pas à son champ : continuez en JSON.
 tool-pick-element = Désigner un élément
 tool-pick-point = Désigner un point
+
+plug-network = Autoriser l'accès au réseau
+plug-network-hint = Hôtes autorisés : { $hosts }
+lib-open-website = Ouvrir le site web
+lib-catalog-loading = Chargement du catalogue…
+lib-catalog-network-off = Activez l'accès réseau pour ce plugin dans Gérer → Plugins.

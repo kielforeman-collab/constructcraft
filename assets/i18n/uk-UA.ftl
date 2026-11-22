@@ -4124,3 +4124,9 @@ pform-json-unknown = У формі немає поля { $name }: продовж
 pform-json-wrong = Значення { $name } не підходить для свого поля: продовжуйте в JSON.
 tool-pick-element = Вказати елемент
 tool-pick-point = Вказати точку
+
+plug-network = Дозволити доступ до мережі
+plug-network-hint = Дозволені хости: { $hosts }
+lib-open-website = Відкрити вебсайт
+lib-catalog-loading = Завантаження каталогу…
+lib-catalog-network-off = Увімкніть доступ до мережі для цього плагіна в Керування → Плагіни.

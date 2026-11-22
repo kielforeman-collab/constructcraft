@@ -24,6 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
 sys-locale.workspace = true
+draco-core.workspace = true
 
 [lints]
 workspace = true

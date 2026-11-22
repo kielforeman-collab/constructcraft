@@ -29,6 +29,7 @@
 
 pub mod api;
 pub mod contributions;
+pub mod http;
 pub mod locales;
 pub mod plugin;
 pub mod process;
@@ -39,8 +40,8 @@ pub mod tools;
 
 pub use cc_script::{convert, sandbox};
 
-pub use api::{API_VERSION, CommandRun, FileRun, ProcessRun};
-pub use contributions::{Button, ButtonSize, FileAction, Setting, SettingKind, When};
+pub use api::{API_VERSION, CommandRun, FileRun, HttpRun, ProcessRun};
+pub use contributions::{Button, ButtonSize, Catalog, CatalogSpec, FileAction, Setting, SettingKind, When};
 pub use locales::Locales;
 pub use plugin::{Manifest, Permissions, Plugin, PluginError, PluginHost};
 pub use sandbox::Limits;

@@ -68,6 +68,8 @@ const PLUGINS_OFF_KEY: &str = "plugins_off";
 const PLUGINS_FILES_KEY: &str = "plugins_files";
 /// eframe storage key of the plugins allowed to run external programs (one id per line).
 const PLUGINS_TOOLS_KEY: &str = "plugins_tools";
+/// eframe storage key of the plugins allowed to access the network (one id per line).
+const PLUGINS_NETWORK_KEY: &str = "plugins_network";
 /// eframe storage key of plugin developer mode ("1": on).
 const PLUGIN_DEV_KEY: &str = "plugin_dev_mode";
 /// eframe storage key of the plugin development folder (empty: none).
@@ -151,6 +153,9 @@ pub struct Preferences {
     /// Plugins the user allowed to run external programs (the `tools`
     /// permission).
     pub plugins_tools: BTreeSet<String>,
+    /// Plugins the user allowed to access HTTPS hosts in `allowed_hosts`
+    /// (the `network` permission).
+    pub plugins_network: BTreeSet<String>,
     /// Plugin developer mode: the plugins load again when a file of the
     /// plugins folder or the development folder changes, and the
     /// development folder's plugins are loaded (see [`crate::plugin_dev`]).
@@ -190,6 +195,7 @@ impl Default for Preferences {
             plugins_off: BTreeSet::new(),
             plugins_files: BTreeSet::new(),
             plugins_tools: BTreeSet::new(),
+            plugins_network: BTreeSet::new(),
             plugin_dev_mode: false,
             plugin_dev_folder: None,
             panels: Default::default(),
@@ -296,6 +302,7 @@ impl Preferences {
             plugins_off: get(PLUGINS_OFF_KEY).map(|v| id_lines(&v)).unwrap_or_default(),
             plugins_files: get(PLUGINS_FILES_KEY).map(|v| id_lines(&v)).unwrap_or_default(),
             plugins_tools: get(PLUGINS_TOOLS_KEY).map(|v| id_lines(&v)).unwrap_or_default(),
+            plugins_network: get(PLUGINS_NETWORK_KEY).map(|v| id_lines(&v)).unwrap_or_default(),
             plugin_dev_mode: on(PLUGIN_DEV_KEY, d.plugin_dev_mode),
             plugin_dev_folder: folder(get(PLUGIN_DEV_FOLDER_KEY)),
             panels: get(PANELS_KEY).and_then(|v| crate::side_panels::PanelLayout::from_text(&v)).unwrap_or_default(),
@@ -334,6 +341,7 @@ impl Preferences {
         set(PLUGINS_OFF_KEY, ids(&self.plugins_off));
         set(PLUGINS_FILES_KEY, ids(&self.plugins_files));
         set(PLUGINS_TOOLS_KEY, ids(&self.plugins_tools));
+        set(PLUGINS_NETWORK_KEY, ids(&self.plugins_network));
         set(PLUGIN_DEV_KEY, flag(self.plugin_dev_mode));
         set(PLUGIN_DEV_FOLDER_KEY, text(&self.plugin_dev_folder));
         set(PANELS_KEY, self.panels.to_text());
@@ -1173,6 +1181,7 @@ mod tests {
             plugins_off: BTreeSet::from(["old_tool".to_string()]),
             plugins_files: BTreeSet::from(["exporter".to_string(), "importer".to_string()]),
             plugins_tools: BTreeSet::from(["simulator".to_string()]),
+            plugins_network: BTreeSet::from(["ikea_browser".to_string()]),
             plugin_dev_mode: true,
             plugin_dev_folder: Some(PathBuf::from("/dev/plugins")),
             panels: crate::side_panels::PanelLayout {

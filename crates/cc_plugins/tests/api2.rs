@@ -80,7 +80,7 @@ impl Drop for LanguageGuard {
 
 #[test]
 fn api_version_is_two_and_api_one_plugins_still_load() {
-    assert_eq!(cc_plugins::API_VERSION, 2);
+    assert_eq!(cc_plugins::API_VERSION, 3);
     let dir = plugin(
         "api1",
         1,
@@ -95,7 +95,7 @@ fn api_version_is_two_and_api_one_plugins_still_load() {
     assert_eq!(p.command_title("c").as_deref(), Some("%t%"));
     assert!(p.buttons().is_empty() && p.settings().is_empty());
     let mut s = session_with(p);
-    assert_eq!(s.execute("p__c", json!({})).unwrap(), json!({"api": 2}));
+    assert_eq!(s.execute("p__c", json!({})).unwrap(), json!({"api": 3}));
 }
 
 #[test]

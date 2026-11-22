@@ -226,10 +226,17 @@ fn bad_gltf_files_are_errors() {
     let mut old = json.clone();
     old["asset"]["version"] = json!("1.0");
     rejected(&mut s, "old.glb", glb(&old, &bin));
-    // Compressed meshes.
-    let mut draco = json.clone();
-    draco["extensionsRequired"] = json!(["KHR_draco_mesh_compression"]);
-    rejected(&mut s, "draco.glb", glb(&draco, &bin));
+    // Unsupported meshopt compression.
+    let mut meshopt = json.clone();
+    meshopt["extensionsRequired"] = json!(["EXT_meshopt_compression"]);
+    rejected(&mut s, "meshopt.glb", glb(&meshopt, &bin));
+    // Corrupted Draco stream is rejected cleanly without panicking.
+    let mut bad_draco = json.clone();
+    bad_draco["extensionsRequired"] = json!(["KHR_draco_mesh_compression"]);
+    bad_draco["meshes"][0]["primitives"][0]["extensions"] = json!({
+        "KHR_draco_mesh_compression": { "bufferView": 0, "attributes": { "POSITION": 0 } }
+    });
+    rejected(&mut s, "bad_draco.glb", glb(&bad_draco, &bin));
     // Offsets, counts and indices out of range, a node cycle, a bad matrix: nothing to import, no panic.
     let mut broken = json.clone();
     broken["accessors"][0]["count"] = json!(1_000_000);
@@ -313,4 +320,39 @@ fn textures_colors_and_opacity_come_in() {
     assert_eq!((texture.image.width, texture.image.height, texture.image.data.clone()), (2, 2, picture));
     // Twice across 2 m, once up 4 m.
     assert!(close(texture.width, 1.0) && close(texture.height, 4.0), "{} {}", texture.width, texture.height);
+}
+
+#[test]
+fn gltf_component_load_sets_kind_and_ifc_properties() {
+    let (bin, json) = scene();
+    let path = scratch("omar.glb");
+    std::fs::write(&path, glb(&json, &bin)).unwrap();
+    let mut s = Session::default();
+    let out = run(
+        &mut s,
+        "gltf_component_load",
+        json!({
+            "path": path,
+            "name": "OMAR 000.697.68",
+            "kind": "furniture",
+            "ifc_class": "IFCFURNITURE",
+            "properties": {
+                "Pset_IkeaProduct": {
+                    "ArticleNumber": "000.697.68",
+                    "CatalogWidth": 0.46,
+                    "ProductUrl": "https://www.ikea.com/us/en/p/omar-shelf-unit-galvanized-00069768/"
+                }
+            }
+        }),
+    );
+    assert_eq!(out["component"], json!("OMAR 000.697.68"));
+    let ty_id = ElementTypeId(out["types"][0].as_u64().unwrap());
+    let ty = s.project().element_type(ty_id).unwrap();
+    let TypeData::Component { def, .. } = &ty.data else { panic!("expected component type") };
+    assert_eq!(def.kind, cc_core::ComponentKind::Furniture);
+    let ifc = def.ifc.as_ref().expect("expected IFC metadata");
+    assert_eq!(ifc.entity, "IFCFURNITURE");
+    assert_eq!(ifc.properties.len(), 1);
+    assert_eq!(ifc.properties[0].name, "Pset_IkeaProduct");
+    assert_eq!(ifc.properties[0].properties.len(), 3);
 }

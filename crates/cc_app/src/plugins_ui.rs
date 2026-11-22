@@ -67,6 +67,10 @@ pub struct Listed {
     pub asks_files: bool,
     /// It asks for the `tools` permission.
     pub asks_tools: bool,
+    /// It asks for the `network` permission (api 3).
+    pub asks_network: bool,
+    /// The HTTPS hosts declared in `allowed_hosts`.
+    pub allowed_hosts: Vec<String>,
     /// Its external programs, with the paths chosen for them.
     pub tools: Vec<Tool>,
     /// For each tool, a program of its name found on `PATH` (offered, never
@@ -157,6 +161,8 @@ pub struct Plugins {
     loaded_from: Option<(Option<PathBuf>, Option<PathBuf>)>,
     /// The loaded plugins' ribbon buttons, in load order then manifest order.
     pub buttons: Vec<RibbonButton>,
+    /// The loaded plugins' Component Library catalog sources (api 3).
+    pub catalogs: Vec<cc_plugins::Catalog>,
     /// The loaded plugins' exporters and importers, in load order then
     /// manifest order.
     pub exporters: Vec<FileEntry>,
@@ -234,6 +240,8 @@ fn listed_item(
             Listed {
                 asks_files: m.requested().files,
                 asks_tools: m.requested().tools,
+                asks_network: m.requested().network,
+                allowed_hosts: m.allowed_hosts,
                 tools,
                 suggestions,
                 has_settings: !m.settings.is_empty(),
@@ -260,6 +268,8 @@ fn listed_item(
             homepage: String::new(),
             asks_files: false,
             asks_tools: false,
+            asks_network: false,
+            allowed_hosts: Vec::new(),
             tools: Vec::new(),
             suggestions: Vec::new(),
             has_settings: false,
@@ -296,8 +306,13 @@ pub fn load(state: &mut AppState) {
     let off = state.prefs.plugins_off.clone();
     let files = state.prefs.plugins_files.clone();
     let tools = state.prefs.plugins_tools.clone();
+    let network = state.prefs.plugins_network.clone();
     let grant = |m: &cc_plugins::Manifest| {
-        (!off.contains(&m.id)).then(|| Permissions { files: files.contains(&m.id), tools: tools.contains(&m.id) })
+        (!off.contains(&m.id)).then(|| Permissions {
+            files: files.contains(&m.id),
+            tools: tools.contains(&m.id),
+            network: network.contains(&m.id),
+        })
     };
     let mut errors = Vec::new();
     // The ids of the development folder, also of those that fail to load.
@@ -364,6 +379,10 @@ pub fn load(state: &mut AppState) {
             });
         }
     }
+    if let Some(cache) = crate::recovery::data_dir().map(|d| d.join("plugin-cache")) {
+        host.set_cache_dir(&cache);
+    }
+    let catalogs = host.catalogs();
     let count = host.plugins().len();
     state.plugins.console.push("", Kind::Info, t!("pcon-loaded", "count" => count));
     for (plugin, kind, text) in notes {
@@ -373,6 +392,7 @@ pub fn load(state: &mut AppState) {
     state.session.set_extension(Some(Box::new(host)));
     state.plugins.listed = listed;
     state.plugins.buttons = buttons;
+    state.plugins.catalogs = catalogs;
     state.plugins.exporters = exporters;
     state.plugins.importers = importers;
     state.plugins.titles = titles;
@@ -774,6 +794,19 @@ fn installed_tab(ui: &mut Ui, ctx: &Context, state: &mut AppState) {
             }
             ui.label(RichText::new(t!("plug-tools-hint")).size(11.5).color(PALETTE.warning));
         }
+        if item.asks_network {
+            let mut network = state.prefs.plugins_network.contains(&item.id);
+            if ui.checkbox(&mut network, t!("plug-network")).changed() {
+                if network {
+                    state.prefs.plugins_network.insert(item.id.clone());
+                } else {
+                    state.prefs.plugins_network.remove(&item.id);
+                }
+                changed = true;
+            }
+            let hosts = item.allowed_hosts.join(", ");
+            ui.label(theme::muted(t!("plug-network-hint", "hosts" => hosts)).size(11.5));
+        }
         ui.add_space(6.0);
         ui.label(RichText::new(t!("plug-commands")).strong());
         if item.commands.is_empty() {
@@ -817,6 +850,7 @@ fn installed_tab(ui: &mut Ui, ctx: &Context, state: &mut AppState) {
                 state.prefs.plugins_off.remove(&item.id);
                 state.prefs.plugins_files.remove(&item.id);
                 state.prefs.plugins_tools.remove(&item.id);
+                state.prefs.plugins_network.remove(&item.id);
                 state.plugins.selected = None;
                 Ok(t!("plug-removed", "name" => item.name.clone()))
             }

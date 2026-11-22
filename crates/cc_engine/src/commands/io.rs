@@ -727,6 +727,149 @@ impl Command for SkpComponentLoad {
     }
 }
 
+/// Load a glTF 2.0 model (.glb or .gltf, including Draco-compressed meshes)
+/// as one reusable component type, ready to place like any component: its
+/// faces become fixed mesh pieces (one per material) with the file's origin
+/// as the insertion point. Optional `kind`, `ifc_class` and `properties`
+/// tag the component for BIM classification, Properties and IFC4 export.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GltfComponentLoad {
+    /// Path of the .glb or .gltf file.
+    pub path: PathBuf,
+    /// Component type name (default: the file stem).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Component kind: `furniture`, `casework`, `plumbing`, `lighting`, `electrical`, or `generic` (default).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Optional IFC entity class (e.g. `IFCFURNITURE`, `IFCLIGHTFIXTURE`, `IFCSANITARYTERMINAL`).
+    #[serde(default)]
+    pub ifc_class: Option<String>,
+    /// Optional property sets (`{ "<PsetName>": { "<PropName>": <value> } }`) attached to the component type.
+    #[serde(default)]
+    pub properties: Option<std::collections::BTreeMap<String, std::collections::BTreeMap<String, Value>>>,
+}
+
+impl Command for GltfComponentLoad {
+    const NAME: &'static str = "gltf_component_load";
+    const KIND: CommandKind = CommandKind::Edit;
+    const READS_FILES: bool = true;
+    fn run(self, s: &mut Session) -> Result<Value> {
+        s.require_read("path", &self.path)?;
+        use crate::gltf::GltfError;
+        if std::fs::metadata(&self.path)?.len() > crate::gltf::MAX_BYTES {
+            return Err(EngineError::rejected(t!("err-gltf-too-large")));
+        }
+        let bytes = std::fs::read(&self.path)?;
+        let stem = file_stem(&self.path);
+        let name = self.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&stem).to_string();
+        let kind = parse_component_kind(self.kind.as_deref())?;
+        let ifc = build_component_ifc(kind, self.ifc_class.as_deref(), self.properties.as_ref())?;
+        let dir = self.path.parent();
+        let mut conv = guard(|| crate::gltf::convert(&bytes, dir, &name, true))?.map_err(|e| {
+            EngineError::rejected(match e {
+                GltfError::Invalid => t!("err-gltf-invalid"),
+                GltfError::Unsupported(ext) => t!("err-gltf-compressed", "ext" => ext),
+                GltfError::MissingBuffer(uri) => t!("err-gltf-buffer", "uri" => uri),
+                GltfError::TooLarge => t!("err-gltf-too-large"),
+            })
+        })?;
+        if conv.types.is_empty() {
+            return Err(EngineError::rejected(t!("err-gltf-empty")));
+        }
+        for ty in &mut conv.types {
+            ty.def.kind = kind;
+            if let Some(ref ifc_class) = ifc {
+                ty.def.ifc = Some(ifc_class.clone());
+            }
+        }
+        let faces = conv.faces;
+        let (types, component, materials) = edit(s, t!("tx-load-component"), |e| {
+            let (types, materials) = add_skp_types(e, conv);
+            let component =
+                types.first().and_then(|id| e.project().element_type(*id)).map(|t| t.name.clone()).unwrap_or_default();
+            Ok((types.iter().map(|t| t.0).collect::<Vec<_>>(), component, materials))
+        })?;
+        Ok(json!({ "component": component, "types": types, "materials": materials, "faces": faces }))
+    }
+}
+
+fn parse_component_kind(raw: Option<&str>) -> Result<cc_core::ComponentKind> {
+    use cc_core::ComponentKind;
+    let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(ComponentKind::Generic);
+    };
+    match s.to_ascii_lowercase().as_str() {
+        "furniture" => Ok(ComponentKind::Furniture),
+        "casework" => Ok(ComponentKind::Casework),
+        "plumbing" => Ok(ComponentKind::Plumbing),
+        "lighting" => Ok(ComponentKind::Lighting),
+        "electrical" => Ok(ComponentKind::Electrical),
+        "generic" => Ok(ComponentKind::Generic),
+        other => Err(EngineError::invalid(format!(
+            "unknown component kind \"{other}\" (expected: furniture, casework, plumbing, lighting, electrical, generic)"
+        ))),
+    }
+}
+
+fn build_component_ifc(
+    kind: cc_core::ComponentKind,
+    ifc_class: Option<&str>,
+    properties: Option<&std::collections::BTreeMap<String, std::collections::BTreeMap<String, Value>>>,
+) -> Result<Option<cc_core::component::IfcClass>> {
+    use cc_core::properties::{Atom, IfcValue, Property, PropertySet, PropertyValue};
+    let entity = ifc_class.map(str::trim).filter(|s| !s.is_empty()).map(str::to_ascii_uppercase);
+    let has_props = properties.is_some_and(|p| !p.is_empty());
+    if entity.is_none() && !has_props {
+        return Ok(None);
+    }
+    let entity = entity.unwrap_or_else(|| {
+        match kind {
+            cc_core::ComponentKind::Furniture | cc_core::ComponentKind::Casework => "IFCFURNITURE",
+            cc_core::ComponentKind::Lighting => "IFCLIGHTFIXTURE",
+            cc_core::ComponentKind::Plumbing => "IFCSANITARYTERMINAL",
+            cc_core::ComponentKind::Electrical => "IFCELECTRICAPPLIANCE",
+            _ => "IFCBUILDINGELEMENTPROXY",
+        }
+        .to_string()
+    });
+    let mut sets = Vec::new();
+    if let Some(map) = properties {
+        for (set_name, props) in map {
+            let mut items = Vec::with_capacity(props.len());
+            for (k, v) in props {
+                let val = match v {
+                    Value::String(s) => Some(IfcValue { measure: "IFCTEXT".into(), value: Atom::Text(s.clone()) }),
+                    Value::Bool(b) => Some(IfcValue { measure: "IFCBOOLEAN".into(), value: Atom::Bool(*b) }),
+                    Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            Some(IfcValue { measure: "IFCINTEGER".into(), value: Atom::Integer(i) })
+                        } else {
+                            n.as_f64()
+                                .filter(|f| f.is_finite())
+                                .map(|f| IfcValue { measure: "IFCREAL".into(), value: Atom::Real(f) })
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(val) = val {
+                    items.push(Property { name: k.clone(), value: PropertyValue::Single(Some(val)) });
+                }
+            }
+            if !items.is_empty() {
+                sets.push(PropertySet { name: set_name.clone(), quantities: false, properties: items });
+            }
+        }
+    }
+    Ok(Some(cc_core::component::IfcClass {
+        entity,
+        predefined: String::new(),
+        object_type: String::new(),
+        properties: sets,
+    }))
+}
+
 /// List the component library: the component files (.ccomp) in `folders`
 /// and their subfolders, each with its component, kind, category (doors
 /// and windows have their own), types, parameters and connectors; `search`

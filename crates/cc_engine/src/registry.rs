@@ -190,6 +190,7 @@ registry![
         io::SkpComponentLoad,
         io::ObjImport,
         io::GltfImport,
+        io::GltfComponentLoad,
         io::IfcExport,
         io::GltfExport,
         io::SheetExport,

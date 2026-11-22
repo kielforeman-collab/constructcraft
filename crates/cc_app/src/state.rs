@@ -285,6 +285,8 @@ pub struct AppState {
     pub plugins: crate::plugins_ui::Plugins,
     /// The 3D CraftHouse catalog and the components downloaded from it.
     pub crafthouse: crate::crafthouse::CraftHouse,
+    /// Active Plugin API 3 Component Library catalog worker.
+    pub plugin_catalog: crate::plugin_catalog::PluginCatalogClient,
     /// The open Site Location window.
     pub site: Option<crate::site_ui::SiteDialog>,
     pub thumbnail_jobs: Vec<crate::thumbnails::Job>,
@@ -388,6 +390,7 @@ impl AppState {
             updates: Default::default(),
             plugins: Default::default(),
             crafthouse: Default::default(),
+            plugin_catalog: Default::default(),
             site: None,
             thumbnail_jobs: Vec::new(),
             job: None,

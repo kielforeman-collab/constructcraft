@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod api2;
+mod api3;
 mod events;
 mod files;
 mod lua;

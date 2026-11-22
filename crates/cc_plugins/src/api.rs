@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The plugin API version this build provides (`api` in `plugin.toml`).
-pub const API_VERSION: u32 = 2;
+pub const API_VERSION: u32 = 3;
 
 /// Makes the wrappers over the private table of the run's functions;
 /// returns its `get`.
@@ -88,6 +88,16 @@ function process.run(tool, options)
   return result
 end
 ccad.process = process
+"#;
+
+/// `ccad.http`, for API 3 plugins with the `network` permission and `allowed_hosts`.
+const HTTP_PRELUDE: &str = r#"
+local ccad, get = ...
+local http = {}
+function http.get(url, options) return get("http_get", "http.get")(url, options) end
+function http.download(url, key, options) return get("http_download", "http.download")(url, key, options) end
+function http.cached(key, options) return get("http_cached", "http.cached")(key, options) end
+ccad.http = http
 "#;
 
 /// Most arguments, input files, copies and output patterns of one
@@ -220,12 +230,21 @@ pub struct ProcessRun {
     pub request: Option<(Table, String, Request)>,
 }
 
-/// What a plugin command's run has besides the session: its granted files
-/// and what `ccad.process.run` needs.
+/// Network access granted to a plugin run (`ccad.http`).
+#[derive(Debug, Clone, Default)]
+pub struct HttpRun {
+    pub allowed: bool,
+    pub allowed_hosts: Vec<String>,
+    pub cache_root: PathBuf,
+}
+
+/// What a plugin command's run has besides the session: its granted files,
+/// external process state, and scoped HTTP access.
 #[derive(Debug, Default)]
 pub struct CommandRun {
     pub files: RefCell<FileRun>,
     pub process: RefCell<ProcessRun>,
+    pub http: HttpRun,
 }
 
 fn process_error(message: impl std::fmt::Display) -> mlua::Error {
@@ -479,12 +498,13 @@ pub struct Api {
 }
 
 impl Api {
-    /// Make the `ccad` global in `lua` for a plugin: also `ccad.file` and
-    /// `ccad.process`.
+    /// Make the `ccad` global in `lua` for a plugin: also `ccad.file`,
+    /// `ccad.process` and `ccad.http`.
     pub fn install_for_plugin(lua: &Lua) -> mlua::Result<Api> {
         let api = Api::install(lua)?;
         lua.load(FILE_PRELUDE).set_name("=ccad.file").call::<()>((api.ccad.clone(), api.get.clone()))?;
         lua.load(PROCESS_PRELUDE).set_name("=ccad.process").call::<()>((api.ccad.clone(), api.get.clone()))?;
+        lua.load(HTTP_PRELUDE).set_name("=ccad.http").call::<()>((api.ccad.clone(), api.get.clone()))?;
         Ok(api)
     }
 
@@ -539,6 +559,7 @@ impl Api {
     ) -> mlua::Result<R> {
         let cell = RefCell::new(session);
         let cell = &cell;
+        let no_http = HttpRun::default();
         let result = lua.scope(|scope| {
             let run = scope.create_function(move |lua, (name, args): (String, LuaValue)| {
                 let mut session = cell.try_borrow_mut().map_err(mlua::Error::runtime)?;
@@ -610,11 +631,13 @@ impl Api {
                     Ok(token)
                 })?;
                 self.imp.raw_set("process_run", process)?;
+                bind_http(scope, &self.imp, &command.http)?;
             } else {
                 let refused = scope.create_function(|_, _: mlua::MultiValue| -> mlua::Result<()> {
                     Err(process_error("not available in event handlers (only while a plugin command runs)"))
                 })?;
                 self.imp.raw_set("process_run", refused)?;
+                bind_http(scope, &self.imp, &no_http)?;
             }
             let result = f(lua);
             self.imp.clear()?;
@@ -624,6 +647,77 @@ impl Api {
         let _ = self.imp.clear();
         result
     }
+
+    /// Run `f` with `ccad.http` bound (for catalog provider callbacks that do
+    /// not touch a `Session`).
+    pub fn with_http<R>(&self, lua: &Lua, http: &HttpRun, f: impl FnOnce(&Lua) -> mlua::Result<R>) -> mlua::Result<R> {
+        let result = lua.scope(|scope| {
+            bind_http(scope, &self.imp, http)?;
+            let result = f(lua);
+            self.imp.clear()?;
+            result
+        });
+        let _ = self.imp.clear();
+        result
+    }
+}
+
+/// Bind `http_get`, `http_download` and `http_cached` into `imp` for one scoped run.
+fn bind_http<'lua, 'scope>(
+    scope: &'lua mlua::Scope<'lua, 'scope>,
+    imp: &Table,
+    http: &'scope HttpRun,
+) -> mlua::Result<()> {
+    let err = |msg: String| mlua::Error::runtime(format!("ccad.http: {msg}"));
+    let get_fn = scope.create_function(move |lua, (url, opts): (String, Option<Table>)| {
+        if !http.allowed {
+            return Err(err("network permission is not granted".into()));
+        }
+        let max_bytes = opts
+            .as_ref()
+            .and_then(|o| o.get::<Option<usize>>("max_bytes").ok().flatten())
+            .unwrap_or(crate::http::DEFAULT_GET_BYTES);
+        let timeout = opts
+            .as_ref()
+            .and_then(|o| o.get::<Option<u64>>("timeout").ok().flatten())
+            .unwrap_or(crate::http::DEFAULT_TIMEOUT_SECS);
+        let (bytes, status) = crate::http::fetch_bytes(&url, &http.allowed_hosts, max_bytes, timeout).map_err(err)?;
+        Ok((lua.create_string(&bytes)?, status))
+    })?;
+    let download_fn = scope.create_function(move |_, (url, key, opts): (String, String, Option<Table>)| {
+        if !http.allowed {
+            return Err(err("network permission is not granted".into()));
+        }
+        let max_bytes = opts
+            .as_ref()
+            .and_then(|o| o.get::<Option<usize>>("max_bytes").ok().flatten())
+            .unwrap_or(crate::http::MAX_RESPONSE_BYTES);
+        let timeout = opts
+            .as_ref()
+            .and_then(|o| o.get::<Option<u64>>("timeout").ok().flatten())
+            .unwrap_or(crate::http::DEFAULT_TIMEOUT_SECS);
+        let sha256 = opts.as_ref().and_then(|o| o.get::<Option<String>>("sha256").ok().flatten());
+        let path = crate::http::download_cached(
+            &url,
+            &http.allowed_hosts,
+            &http.cache_root,
+            &key,
+            max_bytes,
+            timeout,
+            sha256.as_deref(),
+        )
+        .map_err(err)?;
+        Ok(path.to_string_lossy().into_owned())
+    })?;
+    let cached_fn = scope.create_function(move |_, (key, opts): (String, Option<Table>)| {
+        let sha256 = opts.as_ref().and_then(|o| o.get::<Option<String>>("sha256").ok().flatten());
+        let found = crate::http::cached_file(&http.cache_root, &key, sha256.as_deref()).map_err(err)?;
+        Ok(found.map(|p| p.to_string_lossy().into_owned()))
+    })?;
+    imp.raw_set("http_get", get_fn)?;
+    imp.raw_set("http_download", download_fn)?;
+    imp.raw_set("http_cached", cached_fn)?;
+    Ok(())
 }
 
 /// Run one command for the Lua code: `Err` for errors of the Lua side (bad

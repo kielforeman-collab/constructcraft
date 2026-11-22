@@ -66,6 +66,8 @@ sort-raytracing = "0.1.1"
 mlua = { version = "0.11", features = ["lua54", "vendored", "serde"] }
 # Plugin manifests (cc_plugins), the version already in the lock file.
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
+# Pure-Rust Draco mesh decoding (cc_engine), Apache-2.0, decode-only.
+draco-core = { version = "2.4.0", default-features = false, features = ["decoder", "edgebreaker_valence_decode", "legacy_bitstream_decode"] }
 
 # Robustness rules (see AGENTS.md): no unsafe, and no panics outside tests.
 [workspace.lints.rust]
