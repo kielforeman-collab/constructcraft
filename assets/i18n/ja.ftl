@@ -4122,3 +4122,9 @@ pform-json-unknown = フォームにフィールド { $name } はありません
 pform-json-wrong = { $name } の値はそのフィールドに合いません: JSON のまま続けてください。
 tool-pick-element = 要素を指定
 tool-pick-point = 点を指定
+
+plug-network = ネットワークへのアクセスを許可
+plug-network-hint = 許可されたホスト: { $hosts }
+lib-open-website = ウェブサイトを開く
+lib-catalog-loading = カタログを読み込み中…
+lib-catalog-network-off = 管理 → プラグイン でこのプラグインのネットワークアクセスを有効にしてください。

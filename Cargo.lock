@@ -788,6 +788,7 @@ dependencies = [
  "cc_script",
  "cc_skp",
  "cc_views",
+ "draco-core",
  "glam",
  "image",
  "mlua",
@@ -831,6 +832,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "toml",
+ "ureq",
 ]
 
 [[package]]
@@ -1207,6 +1209,15 @@ name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+
+[[package]]
+name = "draco-core"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa21a1941edd7f12ff743ed02af570cc0974355c26fc587626b33253d00a9968"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "duplicate"

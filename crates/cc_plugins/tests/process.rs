@@ -509,7 +509,7 @@ fn manifests_declare_tools_with_the_permission() {
     assert!(load(&format!("permissions = [\"tools\"]\n{unknown}")).is_err());
     // Granted only what the manifest asks for.
     let mut plugin = load(&format!("permissions = [\"tools\"]\n{TOOLS}")).unwrap();
-    plugin.grant(Permissions { files: true, tools: true });
+    plugin.grant(Permissions { files: true, tools: true, ..Permissions::NONE });
     assert_eq!(plugin.granted(), tools_only());
     let tools = plugin.tools();
     assert_eq!((tools.len(), tools[0].name.as_str(), tools[0].path.is_none()), (1, "Helper tool", true));

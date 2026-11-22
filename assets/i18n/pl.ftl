@@ -4122,3 +4122,9 @@ pform-json-unknown = Formularz nie ma pola { $name }: kontynuuj w JSON.
 pform-json-wrong = Wartość { $name } nie pasuje do swojego pola: kontynuuj w JSON.
 tool-pick-element = Wskaż element
 tool-pick-point = Wskaż punkt
+
+plug-network = Zezwól na dostęp do sieci
+plug-network-hint = Dozwolone hosty: { $hosts }
+lib-open-website = Otwórz stronę
+lib-catalog-loading = Wczytywanie katalogu…
+lib-catalog-network-off = Włącz dostęp do sieci dla tej wtyczki w Zarządzaj → Wtyczki.

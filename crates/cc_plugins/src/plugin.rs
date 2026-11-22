@@ -113,10 +113,11 @@
 //! a plugin loaded from its own folder (not a folder of plugins) starts
 //! with the defaults.
 
-use crate::api::{API_VERSION, Api, CommandRun, FileRun, ProcessRun, engine_error, finished_table};
+use crate::api::{API_VERSION, Api, CommandRun, FileRun, HttpRun, ProcessRun, engine_error, finished_table};
 use crate::contributions::{
-    Button, ButtonSize, ButtonSpec, FileAction, FileActionSpec, MAX_BUTTONS, MAX_FILE_ACTIONS, MAX_ICON, MAX_SETTINGS,
-    Setting, SettingSpec, When, check_param_hints, current_values, path_params, resolve_schema, settings_json,
+    Button, ButtonSize, ButtonSpec, Catalog, CatalogSpec, FileAction, FileActionSpec, MAX_BUTTONS, MAX_CATALOGS,
+    MAX_FILE_ACTIONS, MAX_ICON, MAX_SETTINGS, Setting, SettingSpec, When, check_param_hints, current_values,
+    path_params, resolve_schema, settings_json,
 };
 use crate::convert::{from_lua, to_lua};
 use crate::locales::Locales;
@@ -199,6 +200,12 @@ pub struct Manifest {
     /// External programs it may run (api 2, with the `tools` permission).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolSpec>,
+    /// HTTPS hosts the plugin may contact (api 3, with the `network` permission).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+    /// Component Library catalog sources (api 3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub catalogs: Vec<CatalogSpec>,
 }
 
 /// The `[settings.*]` tables in the order the manifest writes them.
@@ -229,13 +236,19 @@ pub struct Permissions {
     pub files: bool,
     /// Run the external programs of its `[[tools]]` (`ccad.process.run`).
     pub tools: bool,
+    /// Make HTTPS requests to `allowed_hosts` (`ccad.http`).
+    pub network: bool,
 }
 
 impl Permissions {
-    pub const NONE: Permissions = Permissions { files: false, tools: false };
+    pub const NONE: Permissions = Permissions { files: false, tools: false, network: false };
 
     fn and(self, other: Permissions) -> Permissions {
-        Permissions { files: self.files && other.files, tools: self.tools && other.tools }
+        Permissions {
+            files: self.files && other.files,
+            tools: self.tools && other.tools,
+            network: self.network && other.network,
+        }
     }
 }
 
@@ -300,7 +313,9 @@ impl Manifest {
                 "files" => {}
                 "tools" if self.api >= 2 => {}
                 "tools" => return Err("the tools permission needs api = 2".into()),
-                _ => return Err(format!("unknown permission \"{p}\" (known: files, tools)")),
+                "network" if self.api >= 3 => {}
+                "network" => return Err("the network permission needs api = 3".into()),
+                _ => return Err(format!("unknown permission \"{p}\" (known: files, tools, network)")),
             }
         }
         if self.api < 2 && !self.buttons.is_empty() {
@@ -347,6 +362,38 @@ impl Manifest {
                 return Err(format!("tools[{}]: the id \"{}\" is used twice", i + 1, t.id));
             }
         }
+        if !self.allowed_hosts.is_empty() {
+            if self.api < 3 {
+                return Err("allowed_hosts needs api = 3".into());
+            }
+            if !self.requested().network {
+                return Err("allowed_hosts needs the \"network\" permission (permissions = [\"network\"])".into());
+            }
+            if self.allowed_hosts.len() > crate::http::MAX_HOSTS {
+                return Err(format!("at most {} allowed_hosts", crate::http::MAX_HOSTS));
+            }
+            for (i, h) in self.allowed_hosts.iter().enumerate() {
+                if !crate::http::valid_host(h) {
+                    return Err(format!("allowed_hosts[{}]: invalid host \"{h}\"", i + 1));
+                }
+            }
+        } else if self.requested().network {
+            return Err("the \"network\" permission requires at least one host in allowed_hosts".into());
+        }
+        if !self.catalogs.is_empty() {
+            if self.api < 3 {
+                return Err("catalogs need api = 3".into());
+            }
+            if self.catalogs.len() > MAX_CATALOGS {
+                return Err(format!("at most {MAX_CATALOGS} catalogs"));
+            }
+            for (i, c) in self.catalogs.iter().enumerate() {
+                c.check().map_err(|e| format!("catalogs[{}]: {e}", i + 1))?;
+                if self.catalogs.iter().take(i).any(|o| o.id == c.id) {
+                    return Err(format!("catalogs[{}]: the id \"{}\" is used twice", i + 1, c.id));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -360,6 +407,7 @@ impl Manifest {
         Permissions {
             files: self.permissions.iter().any(|p| p == "files"),
             tools: self.permissions.iter().any(|p| p == "tools"),
+            network: self.permissions.iter().any(|p| p == "network"),
         }
     }
 
@@ -525,6 +573,15 @@ enum Stepped {
     Yielded(LuaValue),
 }
 
+/// A catalog provider registered by `ccad.catalog { … }` (api 3).
+struct CatalogHandler {
+    id: String,
+    load: Function,
+    search: Function,
+    thumbnail: Option<Function>,
+    prepare: Function,
+}
+
 /// A loaded plugin.
 pub struct Plugin {
     pub manifest: Manifest,
@@ -535,6 +592,10 @@ pub struct Plugin {
     commands: Vec<PluginCommand>,
     /// Its event handlers, in registration order.
     handlers: Vec<Handler>,
+    /// Its catalog providers (api 3).
+    catalogs: Vec<CatalogHandler>,
+    /// Its isolated cache folder for `ccad.http.download` / `ccad.http.cached`.
+    cache_root: PathBuf,
     /// Its translations (`None` under api 1: text is shown as written).
     locales: Option<Locales>,
     buttons: Vec<ButtonDef>,
@@ -616,14 +677,18 @@ impl Plugin {
         let settings = manifest.setting_list().map_err(fail)?;
         let values = current_values(&settings, stored);
         let sandbox = Sandbox::new(limits).map_err(|e| fail(engine_error(&e).message))?;
-        let (api, commands, handlers, settings_meta) =
+        let (api, commands, handlers, catalogs, settings_meta) =
             setup(&sandbox, dir, &manifest, &source, &values).map_err(|e| fail(engine_error(&e).message))?;
         if let Some(b) = buttons.iter().find(|b| !commands.iter().any(|c| c.short == b.command)) {
             return Err(fail(format!("a button runs the command \"{}\", which main.lua does not register", b.command)));
         }
+        if let Some(c) = manifest.catalogs.iter().find(|c| !catalogs.iter().any(|h| h.id == c.id)) {
+            return Err(fail(format!("catalog \"{}\" declared in {MANIFEST} is not registered by main.lua", c.id)));
+        }
         let exporters = file_actions(&manifest.exporters, &commands, "exporters", "save_path").map_err(fail)?;
         let importers = file_actions(&manifest.importers, &commands, "importers", "open_path").map_err(fail)?;
         let printed = sandbox.take_output();
+        let cache_root = dir.join(".cache");
         Ok(Plugin {
             manifest,
             dir: dir.to_path_buf(),
@@ -632,6 +697,8 @@ impl Plugin {
             api,
             commands,
             handlers,
+            catalogs,
+            cache_root,
             locales,
             buttons,
             settings,
@@ -847,9 +914,107 @@ impl Plugin {
             thread: Some(thread.clone()),
             request: None,
         };
-        let run = CommandRun { files: RefCell::new(FileRun::new(grants)), process: RefCell::new(process) };
+        let run = CommandRun {
+            files: RefCell::new(FileRun::new(grants)),
+            process: RefCell::new(process),
+            http: self.http_run(),
+        };
         self.sandbox.reset_budget();
         Some(self.step(session, Coroutine { name, scope, thread, run }, Resume::Start(args)))
+    }
+
+    /// Override the folder where `ccad.http.download` caches files for this plugin.
+    pub fn set_cache_root(&mut self, root: PathBuf) {
+        self.cache_root = root;
+    }
+
+    /// The `HttpRun` context for this plugin's current network permission and cache folder.
+    pub fn http_run(&self) -> HttpRun {
+        HttpRun {
+            allowed: self.granted.network,
+            allowed_hosts: self.manifest.allowed_hosts.clone(),
+            cache_root: self.cache_root.clone(),
+        }
+    }
+
+    /// The catalog sources declared by this plugin (text resolved in the current language).
+    pub fn catalogs(&self) -> Vec<Catalog> {
+        self.manifest
+            .catalogs
+            .iter()
+            .map(|c| Catalog {
+                plugin_id: self.manifest.id.clone(),
+                plugin_name: self.display_name(),
+                id: c.id.clone(),
+                label: self.resolve(&c.label),
+                description: self.resolve(&c.description),
+            })
+            .collect()
+    }
+
+    /// Call a catalog provider's `load()` callback.
+    pub fn catalog_load(&mut self, catalog_id: &str) -> cc_engine::Result<Value> {
+        let func = self
+            .catalogs
+            .iter()
+            .find(|c| c.id == catalog_id)
+            .map(|c| c.load.clone())
+            .ok_or_else(|| EngineError::not_found(format!("catalog \"{catalog_id}\" not found")))?;
+        self.call_catalog_http(&func, None)
+    }
+
+    /// Call a catalog provider's `search(query)` callback.
+    pub fn catalog_search(&mut self, catalog_id: &str, query: Value) -> cc_engine::Result<Value> {
+        let func = self
+            .catalogs
+            .iter()
+            .find(|c| c.id == catalog_id)
+            .map(|c| c.search.clone())
+            .ok_or_else(|| EngineError::not_found(format!("catalog \"{catalog_id}\" not found")))?;
+        self.call_catalog_http(&func, Some(query))
+    }
+
+    /// Call a catalog provider's optional `thumbnail(item_id)` callback.
+    pub fn catalog_thumbnail(&mut self, catalog_id: &str, item_id: &str) -> cc_engine::Result<Option<PathBuf>> {
+        let Some(func) = self.catalogs.iter().find(|c| c.id == catalog_id).and_then(|c| c.thumbnail.clone()) else {
+            return Ok(None);
+        };
+        let out = self.call_catalog_http(&func, Some(Value::String(item_id.to_string())))?;
+        Ok(out.as_str().filter(|s| !s.is_empty()).map(PathBuf::from))
+    }
+
+    /// The folder where `ccad.http.download` caches files for this plugin.
+    pub fn cache_root(&self) -> &Path {
+        &self.cache_root
+    }
+
+    /// Call a catalog provider's `prepare(item_id)` callback (downloads and
+    /// verifies the asset into the plugin's cache and returns the load
+    /// descriptor `{ command, args }`).
+    pub fn catalog_prepare(&mut self, catalog_id: &str, item_id: &str) -> cc_engine::Result<Value> {
+        let func = self
+            .catalogs
+            .iter()
+            .find(|c| c.id == catalog_id)
+            .map(|c| c.prepare.clone())
+            .ok_or_else(|| EngineError::not_found(format!("catalog \"{catalog_id}\" not found")))?;
+        self.call_catalog_http(&func, Some(Value::String(item_id.to_string())))
+    }
+
+    fn call_catalog_http(&mut self, func: &Function, arg: Option<Value>) -> cc_engine::Result<Value> {
+        fill_settings(&self.sandbox.lua, &self.settings_meta, &self.values).map_err(|e| engine_error(&e))?;
+        let http = self.http_run();
+        self.sandbox.reset_budget();
+        let lua = &self.sandbox.lua;
+        self.api
+            .with_http(lua, &http, |lua| {
+                let v: LuaValue = match arg {
+                    Some(a) => func.call(to_lua(lua, &a)?)?,
+                    None => func.call(())?,
+                };
+                from_lua(lua, &v).map_err(mlua::Error::runtime)
+            })
+            .map_err(|e| engine_error(&e))
     }
 
     /// Resume the coroutine of `co` with `input`, in its scope, until it
@@ -1114,13 +1279,15 @@ fn on_fn(lua: &Lua, sink: Rc<RefCell<Vec<Handler>>>) -> mlua::Result<Function> {
 /// Install the API, `require`, `ccad.settings`, `ccad.data`, `ccad.command`
 /// and `ccad.on`, and run the main file. Returns the API, the commands, the
 /// event handlers and the metatable of `ccad.settings`.
+type SetupOutput = (Api, Vec<PluginCommand>, Vec<Handler>, Vec<CatalogHandler>, Table);
+
 fn setup(
     sandbox: &Sandbox,
     dir: &Path,
     manifest: &Manifest,
     source: &str,
     values: &Map<String, Value>,
-) -> mlua::Result<(Api, Vec<PluginCommand>, Vec<Handler>, Table)> {
+) -> mlua::Result<SetupOutput> {
     let lua = &sandbox.lua;
     let api = Api::install_for_plugin(lua)?;
     let plugin = lua.create_table()?;
@@ -1158,12 +1325,42 @@ fn setup(
     api.ccad.raw_set("command", command)?;
     let handlers: Rc<RefCell<Vec<Handler>>> = Rc::default();
     api.ccad.raw_set("on", on_fn(lua, handlers.clone())?)?;
+    let catalogs: Rc<RefCell<Vec<CatalogHandler>>> = Rc::default();
+    let cat_sink = catalogs.clone();
+    let declared_catalogs: Vec<String> = manifest.catalogs.iter().map(|c| c.id.clone()).collect();
+    let catalog_fn = lua.create_function(move |_, spec: Table| {
+        if version < 3 {
+            return Err(mlua::Error::runtime("ccad.catalog needs api = 3"));
+        }
+        let cid: String =
+            spec.get::<Option<String>>("id")?.ok_or_else(|| mlua::Error::runtime("ccad.catalog: needs an id"))?;
+        if !declared_catalogs.iter().any(|d| d == &cid) {
+            return Err(mlua::Error::runtime(format!("ccad.catalog: \"{cid}\" is not declared in {MANIFEST}")));
+        }
+        let load: Function = spec
+            .get::<Option<Function>>("load")?
+            .ok_or_else(|| mlua::Error::runtime(format!("ccad.catalog({cid}): needs a load function")))?;
+        let search: Function = spec
+            .get::<Option<Function>>("search")?
+            .ok_or_else(|| mlua::Error::runtime(format!("ccad.catalog({cid}): needs a search function")))?;
+        let thumbnail: Option<Function> = spec.get("thumbnail")?;
+        let prepare: Function = spec
+            .get::<Option<Function>>("prepare")?
+            .ok_or_else(|| mlua::Error::runtime(format!("ccad.catalog({cid}): needs a prepare function")))?;
+        let mut list = cat_sink.borrow_mut();
+        if list.iter().any(|c| c.id == cid) {
+            return Err(mlua::Error::runtime(format!("ccad.catalog: \"{cid}\" is registered twice")));
+        }
+        list.push(CatalogHandler { id: cid, load, search, thumbnail, prepare });
+        Ok(())
+    })?;
+    api.ccad.raw_set("catalog", catalog_fn)?;
 
     sandbox.reset_budget();
     let chunk_name = format!("@{}/{}", manifest.id, manifest.main);
     lua.load(source).set_name(chunk_name).set_mode(mlua::ChunkMode::Text).exec()?;
 
-    // Commands are registered while the plugin loads only.
+    // Commands, events and catalogs are registered while the plugin loads only.
     let late = lua.create_function(|_, _: mlua::MultiValue| -> mlua::Result<()> {
         Err(mlua::Error::runtime("ccad.command can only be called while the plugin loads"))
     })?;
@@ -1172,9 +1369,14 @@ fn setup(
         Err(mlua::Error::runtime("ccad.on can only be called while the plugin loads"))
     })?;
     api.ccad.raw_set("on", late_on)?;
+    let late_cat = lua.create_function(|_, _: mlua::MultiValue| -> mlua::Result<()> {
+        Err(mlua::Error::runtime("ccad.catalog can only be called while the plugin loads"))
+    })?;
+    api.ccad.raw_set("catalog", late_cat)?;
     let commands = std::mem::take(&mut *registered.borrow_mut());
     let handlers = std::mem::take(&mut *handlers.borrow_mut());
-    Ok((api, commands, handlers, meta))
+    let catalogs = std::mem::take(&mut *catalogs.borrow_mut());
+    Ok((api, commands, handlers, catalogs, meta))
 }
 
 /// Read one `ccad.command { … }` table of a plugin written for `version` of
@@ -1450,6 +1652,8 @@ impl PluginHost {
                         "settings": settings,
                         "exporters": p.exporters(),
                         "importers": p.importers(),
+                        "catalogs": p.catalogs(),
+                        "allowed_hosts": p.manifest.allowed_hosts,
                         "tools": p.tools().iter().map(|t| json!({
                             "id": t.id,
                             "name": t.name,
@@ -1462,6 +1666,18 @@ impl PluginHost {
                 })
                 .collect(),
         )
+    }
+
+    /// All catalog sources registered by loaded plugins, in load then manifest order.
+    pub fn catalogs(&self) -> Vec<Catalog> {
+        self.plugins.iter().flat_map(Plugin::catalogs).collect()
+    }
+
+    /// Set the base cache directory for all loaded plugins (`<base>/<plugin_id>`).
+    pub fn set_cache_dir(&mut self, base: &Path) {
+        for p in &mut self.plugins {
+            p.set_cache_root(base.join(&p.manifest.id));
+        }
     }
 }
 

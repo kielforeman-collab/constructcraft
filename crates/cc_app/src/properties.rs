@@ -2213,7 +2213,15 @@ fn property_rows(ui: &mut Ui, label: &str, value: &cc_core::properties::Property
             _ => format::number(*value, 3),
         },
     };
-    readonly_row(ui, label, text);
+    if text.starts_with("https://") && !text.contains(char::is_whitespace) {
+        let display = text.trim_start_matches("https://");
+        row(ui, label, |ui| {
+            ui.add_space(4.0);
+            ui.hyperlink_to(display, &text).on_hover_text(&text);
+        });
+    } else {
+        readonly_row(ui, label, text);
+    }
 }
 
 /// An imported value as text, in the project's units for measures.

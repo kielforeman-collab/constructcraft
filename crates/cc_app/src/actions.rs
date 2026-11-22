@@ -433,6 +433,16 @@ pub fn load_component_path(state: &mut AppState, path: std::path::PathBuf) {
     crate::jobs::start(state, t!("job-loading-component"), path, crate::jobs::Base::Current, run, finish);
 }
 
+/// Load a component prepared by a Plugin API 3 catalog provider (e.g. `gltf_component_load`).
+pub fn load_catalog_component(state: &mut AppState, load: crate::plugin_catalog::PreparedLoad) {
+    let command = load.command;
+    let args = load.args;
+    let path = load.path;
+    let run = move |s: &mut cc_engine::Session| s.execute(&command, args);
+    let finish: crate::jobs::Finish = Box::new(|state, result, _| component_loaded(state, result));
+    crate::jobs::start(state, t!("job-loading-component"), path, crate::jobs::Base::Current, run, finish);
+}
+
 fn component_loaded(state: &mut AppState, result: cc_engine::Result<serde_json::Value>) {
     match result {
         Ok(out) => {

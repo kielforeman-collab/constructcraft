@@ -4122,3 +4122,9 @@ pform-json-unknown = 表單沒有 { $name } 欄位：請繼續使用 JSON。
 pform-json-wrong = { $name } 的值不符合其欄位：請繼續使用 JSON。
 tool-pick-element = 點選元素
 tool-pick-point = 點選點
+
+plug-network = 允許存取網路
+plug-network-hint = 允許的主機：{ $hosts }
+lib-open-website = 開啟網站
+lib-catalog-loading = 正在載入目錄…
+lib-catalog-network-off = 請在 管理 → 外掛程式 中為此外掛程式啟用網路存取。

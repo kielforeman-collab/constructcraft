@@ -4122,3 +4122,9 @@ pform-json-unknown = Il modulo non ha il campo { $name }: continua in JSON.
 pform-json-wrong = Il valore di { $name } non è adatto al suo campo: continua in JSON.
 tool-pick-element = Indica elemento
 tool-pick-point = Indica punto
+
+plug-network = Consenti accesso alla rete
+plug-network-hint = Host consentiti: { $hosts }
+lib-open-website = Apri sito web
+lib-catalog-loading = Caricamento catalogo…
+lib-catalog-network-off = Attiva l'accesso alla rete per questo plugin in Gestisci → Plugin.

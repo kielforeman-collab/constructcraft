@@ -10,7 +10,8 @@
 //!
 //! Files are hostile input: every index, offset and count is checked, the
 //! node graph is walked with a depth limit and a visited set, and the sizes
-//! read are bounded. Compressed meshes (Draco, meshopt) are not read.
+//! read are bounded. Draco-compressed meshes (`KHR_draco_mesh_compression`)
+//! are decoded; meshopt-compressed meshes are not read.
 
 use crate::import_material::{ImportedMaterial, UvScale};
 use crate::skp::{Converted, MeshBuild, SkpPlacement, SkpType, mesh_definition};
@@ -169,6 +170,18 @@ impl Doc {
         self.array(key).get(usize::try_from(index?.as_u64()?).ok()?)
     }
 
+    /// Raw slice of a `bufferView`, bounds-checked against its buffer and `MAX_BYTES`.
+    fn buffer_view_bytes(&self, index: Option<&Value>) -> Option<&[u8]> {
+        let view = self.item("bufferViews", index)?;
+        let buffer = self.buffers.get(usize::try_from(view.get("buffer")?.as_u64()?).ok()?)?.as_ref()?;
+        let start = usize::try_from(view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0)).ok()?;
+        let len = usize::try_from(view.get("byteLength")?.as_u64()?).ok()?;
+        if len as u64 > MAX_BYTES {
+            return None;
+        }
+        buffer.get(start..start.checked_add(len)?)
+    }
+
     /// The values of an accessor as numbers, `width` per element (normalized
     /// integers mapped to 0..1 or -1..1); `None` when anything is out of range.
     fn accessor(&self, index: Option<&Value>, width: usize) -> Option<Vec<f64>> {
@@ -312,46 +325,59 @@ impl Walker<'_> {
             if !matches!(mode, 4..=6) {
                 continue;
             }
-            let Some(positions) = self.doc.accessor(primitive.get("attributes").and_then(|a| a.get("POSITION")), 3)
-            else {
-                continue;
-            };
-            let points: Vec<DVec3> = positions
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .map(|p| {
-                    let w = world.transform_point3(DVec3::new(p[0], p[1], p[2]));
-                    // Y up to Z up.
-                    DVec3::new(w.x, -w.z, w.y)
-                })
-                .collect();
-            let indices: Vec<usize> = match primitive.get("indices") {
-                Some(i) => match self.doc.accessor(Some(i), 1) {
-                    Some(v) => v.into_iter().map(|i| i as usize).collect(),
-                    None => continue,
-                },
-                None => (0..points.len()).collect(),
-            };
             let material = primitive.get("material").and_then(Value::as_u64).and_then(|m| usize::try_from(m).ok());
             // The texture coordinates the material's base color reads.
             let set = material.and_then(|m| self.doc.array("materials").get(m)).and_then(|m| self.doc.base_texture(m));
-            let uvs: Vec<glam::DVec2> = set
-                .and_then(|(_, set)| {
-                    let attributes = primitive.get("attributes")?;
-                    self.doc.accessor(attributes.get(format!("TEXCOORD_{set}")), 2)
-                })
-                .map(|v| v.as_chunks::<2>().0.iter().map(|t| glam::DVec2::new(t[0], t[1])).collect())
-                .unwrap_or_default();
-            let corners: Vec<[usize; 3]> = match mode {
-                4 => indices.as_chunks::<3>().0.to_vec(),
-                // Strips alternate their winding.
-                5 => indices
-                    .windows(3)
-                    .enumerate()
-                    .map(|(k, t)| if k % 2 == 0 { [t[0], t[1], t[2]] } else { [t[1], t[0], t[2]] })
-                    .collect(),
-                _ => indices.get(1..).unwrap_or_default().windows(2).map(|t| [indices[0], t[0], t[1]]).collect(),
+            let texcoord_key = set.map(|(_, s)| format!("TEXCOORD_{s}"));
+
+            let (points, uvs, corners): (Vec<DVec3>, Vec<DVec2>, Vec<[usize; 3]>) = if let Some(draco_ext) =
+                primitive.get("extensions").and_then(|e| e.get("KHR_draco_mesh_compression"))
+            {
+                match decode_draco_primitive(self.doc, draco_ext, world, texcoord_key.as_deref())? {
+                    Some(decoded) => decoded,
+                    None => continue,
+                }
+            } else {
+                let Some(positions) = self.doc.accessor(primitive.get("attributes").and_then(|a| a.get("POSITION")), 3)
+                else {
+                    continue;
+                };
+                let points: Vec<DVec3> = positions
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|p| {
+                        let w = world.transform_point3(DVec3::new(p[0], p[1], p[2]));
+                        // Y up to Z up.
+                        DVec3::new(w.x, -w.z, w.y)
+                    })
+                    .collect();
+                let indices: Vec<usize> = match primitive.get("indices") {
+                    Some(i) => match self.doc.accessor(Some(i), 1) {
+                        Some(v) => v.into_iter().map(|i| i as usize).collect(),
+                        None => continue,
+                    },
+                    None => (0..points.len()).collect(),
+                };
+                let uvs: Vec<DVec2> = texcoord_key
+                    .as_deref()
+                    .and_then(|key| {
+                        let attributes = primitive.get("attributes")?;
+                        self.doc.accessor(attributes.get(key), 2)
+                    })
+                    .map(|v| v.as_chunks::<2>().0.iter().map(|t| DVec2::new(t[0], t[1])).collect())
+                    .unwrap_or_default();
+                let corners: Vec<[usize; 3]> = match mode {
+                    4 => indices.as_chunks::<3>().0.to_vec(),
+                    // Strips alternate their winding.
+                    5 => indices
+                        .windows(3)
+                        .enumerate()
+                        .map(|(k, t)| if k % 2 == 0 { [t[0], t[1], t[2]] } else { [t[1], t[0], t[2]] })
+                        .collect(),
+                    _ => indices.get(1..).unwrap_or_default().windows(2).map(|t| [indices[0], t[0], t[1]]).collect(),
+                };
+                (points, uvs, corners)
             };
             for corner in corners {
                 let [a, b, c] = corner;
@@ -378,6 +404,63 @@ impl Walker<'_> {
         }
         Ok(())
     }
+}
+
+/// Decode a `KHR_draco_mesh_compression` primitive into Z-up world points,
+/// optional base-color UVs, and triangle corner indices.
+#[allow(clippy::type_complexity)]
+fn decode_draco_primitive(
+    doc: &Doc,
+    ext: &Value,
+    world: DMat4,
+    texcoord_key: Option<&str>,
+) -> Result<Option<(Vec<DVec3>, Vec<DVec2>, Vec<[usize; 3]>)>, GltfError> {
+    let Some(bytes) = doc.buffer_view_bytes(ext.get("bufferView")) else {
+        return Ok(None);
+    };
+    let mut buf = draco_core::DecoderBuffer::new(bytes);
+    let mut mesh = draco_core::Mesh::new();
+    draco_core::MeshDecoder::new().decode(&mut buf, &mut mesh).map_err(|_| GltfError::Invalid)?;
+    let num_points = mesh.num_points();
+    if num_points > MAX_COUNT || mesh.num_faces() > crate::skp::MAX_FACES {
+        return Err(GltfError::TooLarge);
+    }
+    let attrs = ext.get("attributes");
+    let attr_by_key = |key: &str| -> Option<&draco_core::geometry_attribute::PointAttribute> {
+        let uid = attrs?.get(key)?.as_u64().and_then(|v| u32::try_from(v).ok())?;
+        mesh.attribute_by_unique_id(uid)
+    };
+    let Some(pos_attr) = attr_by_key("POSITION")
+        .or_else(|| mesh.named_attribute(draco_core::geometry_attribute::GeometryAttributeType::Position))
+    else {
+        return Ok(None);
+    };
+    let raw_pos = pos_attr.read_f32s(num_points, 3);
+    let points: Vec<DVec3> = raw_pos
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|p| {
+            let w = world.transform_point3(DVec3::new(f64::from(p[0]), f64::from(p[1]), f64::from(p[2])));
+            // Y up to Z up.
+            DVec3::new(w.x, -w.z, w.y)
+        })
+        .collect();
+    let uvs: Vec<DVec2> = texcoord_key
+        .and_then(attr_by_key)
+        .map(|uv_attr| {
+            uv_attr
+                .read_f32s(num_points, 2)
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|t| DVec2::new(f64::from(t[0]), f64::from(t[1])))
+                .collect()
+        })
+        .unwrap_or_default();
+    let corners: Vec<[usize; 3]> =
+        mesh.faces().iter().map(|f| [f[0].0 as usize, f[1].0 as usize, f[2].0 as usize]).collect();
+    Ok(Some((points, uvs, corners)))
 }
 
 fn name_of(v: &Value) -> String {
@@ -421,9 +504,8 @@ pub fn convert(bytes: &[u8], dir: Option<&Path>, name: &str, merge: bool) -> Res
         return Err(GltfError::Invalid);
     }
     let required = json.get("extensionsRequired").and_then(Value::as_array).into_iter().flatten();
-    if let Some(ext) = required
-        .filter_map(Value::as_str)
-        .find(|e| matches!(*e, "KHR_draco_mesh_compression" | "EXT_meshopt_compression" | "KHR_meshopt_compression"))
+    if let Some(ext) =
+        required.filter_map(Value::as_str).find(|e| matches!(*e, "EXT_meshopt_compression" | "KHR_meshopt_compression"))
     {
         return Err(GltfError::Unsupported(ext.to_string()));
     }

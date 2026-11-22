@@ -35,6 +35,8 @@ pub enum Source {
     Folders,
     /// The 3D CraftHouse library, online.
     Online,
+    /// A Plugin API 3 catalog provider (index into `state.plugins.catalogs`).
+    PluginCatalog(usize),
 }
 
 /// The order of the cards.
@@ -93,6 +95,12 @@ pub struct Library {
     pub author: Option<String>,
     pub sort: Sort,
     pub selected: Option<PathBuf>,
+    /// Active category filter for a plugin catalog source.
+    pub catalog_category: Option<String>,
+    /// Active color filter for a plugin catalog source.
+    pub catalog_color: Option<String>,
+    /// Selected item id for a plugin catalog source.
+    pub catalog_selected: Option<String>,
     /// Plan outlines of the selected component (for its thumbnail).
     pub outlines: Vec<Vec<DVec2>>,
     /// The row that saves a project component into a library folder is shown.
@@ -190,6 +198,9 @@ fn kind_label(kind: &str) -> String {
 fn set_source(state: &mut AppState, lib: &mut Library, source: Source) {
     lib.source = source;
     lib.selected = None;
+    lib.catalog_selected = None;
+    lib.catalog_category = None;
+    lib.catalog_color = None;
     lib.outlines.clear();
     lib.folder = None;
     lib.author = None;
@@ -197,6 +208,10 @@ fn set_source(state: &mut AppState, lib: &mut Library, source: Source) {
         Source::Folders => refresh(state, lib),
         Source::Online => {
             lib.entries = state.crafthouse.entries();
+            lib.errors = 0;
+        }
+        Source::PluginCatalog(_) => {
+            lib.entries.clear();
             lib.errors = 0;
         }
     }
@@ -214,6 +229,7 @@ fn picked_file(state: &AppState, lib: &Library) -> Option<PathBuf> {
     match lib.source {
         Source::Folders => Some(selected.clone()),
         Source::Online => state.crafthouse.local(selected).cloned(),
+        Source::PluginCatalog(_) => None,
     }
 }
 
@@ -223,24 +239,34 @@ fn select(state: &AppState, lib: &mut Library, path: PathBuf) {
     lib.outlines = match lib.source {
         Source::Folders => outlines(&path),
         Source::Online => state.crafthouse.local(&path).map(|p| outlines(p)).unwrap_or_default(),
+        Source::PluginCatalog(_) => Vec::new(),
     };
     lib.selected = Some(path);
 }
 
 pub fn show(ctx: &Context, state: &mut AppState) {
     let Some(mut lib) = state.dialogs.library.take() else { return };
+    if let Source::PluginCatalog(idx) = lib.source
+        && idx >= state.plugins.catalogs.len()
+    {
+        set_source(state, &mut lib, Source::Folders);
+    }
     // The window keeps clear of the screen's edges on small screens.
     let screen = ctx.content_rect().size();
     let size = vec2((screen.x - 80.0).clamp(720.0, BODY.x), (screen.y - 190.0).clamp(360.0, BODY.y));
     let can_save = lib.source == Source::Folders && can_save(state);
     let saving = lib.saving;
     // Nothing to load until a component is picked and, online, its file has arrived.
-    let waiting = picked_file(state, &lib).is_none();
+    let waiting = match lib.source {
+        Source::PluginCatalog(_) => lib.catalog_selected.is_none() || state.plugin_catalog.preparing.is_some(),
+        _ => picked_file(state, &lib).is_none(),
+    };
     let (mut load, mut save) = (0, None);
     let mut open_now = false;
+    let mut prepared_ready = None;
     let response = Dialog::new("component-library", t!("dlg-library")).width(size.x).show(
         ctx,
-        |ui| body(ui, state, &mut lib, size, can_save, &mut open_now),
+        |ui| body(ui, state, &mut lib, size, can_save, &mut open_now, &mut prepared_ready),
         |f| {
             if can_save {
                 save = Some(f.toggle(t!("lib-save-toggle"), saving));
@@ -252,6 +278,10 @@ pub fn show(ctx: &Context, state: &mut AppState) {
             f.secondary(t!("action-close"));
         },
     );
+    if let Some(prepared) = prepared_ready {
+        crate::actions::load_catalog_component(state, prepared);
+        return;
+    }
     if response.dismissed {
         return;
     }
@@ -262,14 +292,28 @@ pub fn show(ctx: &Context, state: &mut AppState) {
         None => {}
     }
     // Load into Project, or a card double-clicked.
-    if open_now && let Some(path) = picked_file(state, &lib) {
-        crate::actions::load_component_path(state, path);
-        return;
+    if open_now {
+        if let Source::PluginCatalog(_) = lib.source {
+            if let Some(id) = lib.catalog_selected.clone() {
+                state.plugin_catalog.request_prepare(&id);
+            }
+        } else if let Some(path) = picked_file(state, &lib) {
+            crate::actions::load_component_path(state, path);
+            return;
+        }
     }
     state.dialogs.library = Some(lib);
 }
 
-fn body(ui: &mut Ui, state: &mut AppState, lib: &mut Library, size: egui::Vec2, can_save: bool, open_now: &mut bool) {
+fn body(
+    ui: &mut Ui,
+    state: &mut AppState,
+    lib: &mut Library,
+    size: egui::Vec2,
+    can_save: bool,
+    open_now: &mut bool,
+    prepared_ready: &mut Option<crate::plugin_catalog::PreparedLoad>,
+) {
     match lib.source {
         // The folders changed in Preferences: read them again.
         Source::Folders if lib.listed != state.prefs.library_folders => refresh(state, lib),
@@ -285,6 +329,24 @@ fn body(ui: &mut Ui, state: &mut AppState, lib: &mut Library, size: egui::Vec2, 
                 lib.outlines = outlines(&path);
             }
         }
+        Source::PluginCatalog(idx) => {
+            if let Some(cat) = state.plugins.catalogs.get(idx).cloned()
+                && let Some(listed) = state.plugins.listed.iter().find(|l| l.id == cat.plugin_id).cloned()
+            {
+                let folder = state.prefs.plugins_dir();
+                let net = state.prefs.plugins_network.contains(&cat.plugin_id);
+                state.plugin_catalog.activate(ui.ctx(), &cat.plugin_id, &cat.id, &listed.dir, folder.as_deref(), net);
+            }
+            let query = crate::plugin_catalog::CatalogQuery {
+                text: lib.search.clone(),
+                category: lib.catalog_category.clone(),
+                color: lib.catalog_color.clone(),
+                ..Default::default()
+            };
+            if let Some(prepared) = state.plugin_catalog.sync(&query) {
+                *prepared_ready = Some(prepared);
+            }
+        }
     }
     top_bar(ui, state, lib);
     let save_row = lib.saving && can_save && lib.source == Source::Folders;
@@ -292,11 +354,19 @@ fn body(ui: &mut Ui, state: &mut AppState, lib: &mut Library, size: egui::Vec2, 
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let grid_width = (size.x - SIDEBAR - DETAILS - 2.0 * DIVIDER).max(CARD);
-        column(ui, SIDEBAR, height, |ui| sidebar(ui, state, lib));
-        divider(ui, height);
-        column(ui, grid_width, height, |ui| grid(ui, state, lib, open_now));
-        divider(ui, height);
-        column(ui, DETAILS, height, |ui| details(ui, state, lib));
+        if let Source::PluginCatalog(idx) = lib.source {
+            column(ui, SIDEBAR, height, |ui| plugin_catalog_sidebar(ui, state, lib, idx));
+            divider(ui, height);
+            column(ui, grid_width, height, |ui| plugin_catalog_grid(ui, state, lib, open_now));
+            divider(ui, height);
+            column(ui, DETAILS, height, |ui| plugin_catalog_details(ui, state, lib));
+        } else {
+            column(ui, SIDEBAR, height, |ui| sidebar(ui, state, lib));
+            divider(ui, height);
+            column(ui, grid_width, height, |ui| grid(ui, state, lib, open_now));
+            divider(ui, height);
+            column(ui, DETAILS, height, |ui| details(ui, state, lib));
+        }
     });
     if save_row {
         save_section(ui, state, lib);
@@ -309,18 +379,26 @@ fn top_bar(ui: &mut Ui, state: &mut AppState, lib: &mut Library) {
     ui.horizontal(|ui| {
         ui.selectable_value(&mut source, Source::Folders, t!("lib-source-folders"));
         ui.selectable_value(&mut source, Source::Online, t!("lib-source-online"));
+        for (i, cat) in state.plugins.catalogs.iter().enumerate() {
+            ui.selectable_value(&mut source, Source::PluginCatalog(i), &cat.label);
+        }
         ui.add_space(12.0);
         // Narrower on a small screen, leaving room for the order.
         let width = (ui.available_width() - 280.0).clamp(140.0, 320.0);
         ui.add(egui::TextEdit::singleline(&mut lib.search).hint_text(t!("lib-search")).desired_width(width));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            egui::ComboBox::from_id_salt("lib-sort").selected_text(lib.sort.label()).width(110.0).show_ui(ui, |ui| {
-                for sort in Sort::ALL {
-                    ui.selectable_value(&mut lib.sort, sort, sort.label());
-                }
+        if !matches!(lib.source, Source::PluginCatalog(_)) {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                egui::ComboBox::from_id_salt("lib-sort").selected_text(lib.sort.label()).width(110.0).show_ui(
+                    ui,
+                    |ui| {
+                        for sort in Sort::ALL {
+                            ui.selectable_value(&mut lib.sort, sort, sort.label());
+                        }
+                    },
+                );
+                ui.label(theme::muted(t!("lib-sort")));
             });
-            ui.label(theme::muted(t!("lib-sort")));
-        });
+        }
     });
     if source != lib.source {
         set_source(state, lib, source);
@@ -363,6 +441,7 @@ fn shown(lib: &Library) -> Vec<usize> {
             && match lib.source {
                 Source::Folders => lib.folder.as_ref().is_none_or(|f| e.path.starts_with(f)),
                 Source::Online => lib.author.as_ref().is_none_or(|a| &e.author == a),
+                Source::PluginCatalog(_) => true,
             }
             && (query.is_empty()
                 || e.component.to_lowercase().contains(&query)
@@ -419,6 +498,7 @@ fn sidebar(ui: &mut Ui, state: &mut AppState, lib: &mut Library) {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(crate::crafthouse::SITE));
                 }
             }
+            Source::PluginCatalog(_) => {}
         }
         ui.add_space(6.0);
         ui.separator();
@@ -494,6 +574,7 @@ fn filters(ui: &mut Ui, state: &AppState, lib: &mut Library) {
                 }
             }
         }
+        Source::PluginCatalog(_) => {}
     }
 }
 
@@ -563,7 +644,7 @@ fn one_line(ui: &Ui, text: RichText, width: f32) -> std::sync::Arc<egui::Galley>
 /// are none.
 fn grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, open_now: &mut bool) {
     let status = match lib.source {
-        Source::Folders => None,
+        Source::Folders | Source::PluginCatalog(_) => None,
         Source::Online => Some(state.crafthouse.status()),
     };
     match status {
@@ -675,6 +756,7 @@ fn card_ui(ui: &mut Ui, state: &mut AppState, lib: &mut Library, index: usize, s
                 }
                 online_picture(state, &path, catalog_picture.as_deref())
             }
+            Source::PluginCatalog(_) => (None, None),
         };
         let corners = CornerRadius { nw: CARD_RADIUS - 1, ne: CARD_RADIUS - 1, sw: 0, se: 0 };
         picture(ui, state, lib, picture_rect.shrink(1.0), shown.as_deref(), file.as_deref(), corners);
@@ -786,6 +868,7 @@ fn details(ui: &mut Ui, state: &mut AppState, lib: &mut Library) {
         let (shown, file) = match lib.source {
             Source::Folders => (None, Some(e.path.clone())),
             Source::Online => online_picture(state, &e.path, e.thumbnail.as_deref()),
+            Source::PluginCatalog(_) => (None, None),
         };
         picture(ui, state, lib, rect, shown.as_deref(), file.as_deref(), CornerRadius::same(4));
         ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.0, PALETTE.border), StrokeKind::Inside);
@@ -922,6 +1005,215 @@ fn save_section(ui: &mut Ui, state: &mut AppState, lib: &mut Library) {
                 }
                 Err(e) => state.dialogs.error = Some(t!("msg-component-save-failed", "error" => e.message)),
             }
+        }
+    });
+}
+
+// --- Plugin API 3 Catalog UI ---
+
+fn plugin_catalog_sidebar(ui: &mut Ui, state: &mut AppState, lib: &mut Library, idx: usize) {
+    let full = vec2(ui.available_width(), 0.0);
+    let Some(cat) = state.plugins.catalogs.get(idx).cloned() else { return };
+    ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+        if ui.add(egui::Button::new(t!("lib-refresh")).min_size(full)).clicked() {
+            state.plugin_catalog.reset();
+        }
+        if let crate::plugin_catalog::LoadState::Ready { notice, .. } = &state.plugin_catalog.state
+            && !notice.is_empty()
+        {
+            ui.add_space(4.0);
+            ui.label(theme::muted(notice).size(10.5));
+        } else if !cat.description.is_empty() {
+            ui.add_space(4.0);
+            ui.label(theme::muted(&cat.description).size(10.5));
+        }
+        ui.add_space(6.0);
+        ui.separator();
+        ui.with_layout(Layout::top_down(Align::Min), |ui| {
+            egui::ScrollArea::vertical().id_salt("lib-plugin-filters").auto_shrink([false, false]).show(ui, |ui| {
+                if !state.prefs.plugins_network.contains(&cat.plugin_id) {
+                    ui.label(RichText::new(t!("lib-catalog-network-off")).color(PALETTE.warning).size(11.5));
+                    ui.add_space(6.0);
+                }
+                let categories = state.plugin_catalog.categories.clone();
+                if !categories.is_empty() {
+                    section_title(ui, t!("lib-category"));
+                    let total = match state.plugin_catalog.state {
+                        crate::plugin_catalog::LoadState::Ready { total, .. } => total,
+                        _ => 0,
+                    };
+                    if filter_row(ui, &t!("lib-all-kinds"), total, lib.catalog_category.is_none()).clicked() {
+                        lib.catalog_category = None;
+                    }
+                    for c in &categories {
+                        let sel = lib.catalog_category.as_deref() == Some(c.id.as_str());
+                        if filter_row(ui, &c.name, c.count, sel).clicked() {
+                            lib.catalog_category = Some(c.id.clone());
+                        }
+                    }
+                }
+            });
+        });
+    });
+}
+
+fn plugin_catalog_grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, open_now: &mut bool) {
+    match &state.plugin_catalog.state {
+        crate::plugin_catalog::LoadState::Idle | crate::plugin_catalog::LoadState::Loading => {
+            centered(ui, |ui| {
+                ui.spinner();
+                ui.label(theme::muted(t!("lib-catalog-loading")));
+            });
+            return;
+        }
+        crate::plugin_catalog::LoadState::Failed(msg) => {
+            let msg = msg.clone();
+            centered(ui, |ui| {
+                ui.label(RichText::new(&msg).color(PALETTE.danger));
+                if ui.button(t!("lib-try-again")).clicked() {
+                    state.plugin_catalog.reset();
+                }
+            });
+            return;
+        }
+        crate::plugin_catalog::LoadState::Ready { .. } => {}
+    }
+
+    if let Some(err) = state.plugin_catalog.search_error.clone() {
+        ui.label(RichText::new(err).color(PALETTE.danger).size(11.5));
+    }
+    let items = state.plugin_catalog.items.clone();
+    let total = state.plugin_catalog.total_matches;
+    ui.label(theme::muted(format!("{total}")).size(11.5));
+    ui.add_space(4.0);
+    if items.is_empty() {
+        centered(ui, |ui| {
+            ui.label(theme::muted(t!("lib-no-match")));
+        });
+        return;
+    }
+
+    let width = ui.available_width();
+    let cols = ((width + GAP) / (CARD + GAP)).floor().max(1.0) as usize;
+    let card_w = ((width - GAP * (cols.saturating_sub(1)) as f32) / cols as f32).max(CARD * 0.75);
+    let pic_h = card_w * 2.0 / 3.0;
+    let card_h = pic_h + CARD_TEXT;
+    let rows = items.len().div_ceil(cols);
+
+    egui::ScrollArea::vertical().id_salt("lib-plugin-grid").auto_shrink([false, false]).show_rows(
+        ui,
+        card_h + GAP,
+        rows,
+        |ui, range| {
+            for r in range {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = GAP;
+                    for c in 0..cols {
+                        let Some(item) = items.get(r * cols + c) else { break };
+                        let selected = lib.catalog_selected.as_deref() == Some(item.id.as_str());
+                        let (rect, response) = ui.allocate_exact_size(vec2(card_w, card_h), Sense::click());
+                        let pic_rect = Rect::from_min_size(rect.min, vec2(card_w, pic_h));
+                        ui.painter().rect_filled(rect, CARD_RADIUS, PALETTE.canvas);
+                        if item.has_thumbnail {
+                            state.plugin_catalog.want_thumbnail(&item.id);
+                        }
+                        let thumb = state.plugin_catalog.thumbnail(&item.id).cloned();
+                        let corners = CornerRadius { nw: CARD_RADIUS - 1, ne: CARD_RADIUS - 1, sw: 0, se: 0 };
+                        picture(ui, state, lib, pic_rect.shrink(1.0), thumb.as_deref(), None, corners);
+                        let stroke = if selected {
+                            Stroke::new(2.0, PALETTE.accent)
+                        } else if response.hovered() {
+                            Stroke::new(1.0, PALETTE.text_muted)
+                        } else {
+                            Stroke::new(1.0, PALETTE.border)
+                        };
+                        ui.painter().rect_stroke(rect, CARD_RADIUS, stroke, StrokeKind::Inside);
+                        let text_rect = Rect::from_min_max(
+                            Pos2::new(rect.left() + 6.0, pic_rect.bottom() + 4.0),
+                            Pos2::new(rect.right() - 6.0, rect.bottom() - 4.0),
+                        );
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
+                            ui.add(egui::Label::new(RichText::new(&item.name).strong().size(11.5)).truncate());
+                            ui.add(egui::Label::new(theme::muted(&item.subtitle).size(10.5)).truncate());
+                        });
+                        if response.clicked() {
+                            lib.catalog_selected = Some(item.id.clone());
+                        }
+                        if response.double_clicked() {
+                            lib.catalog_selected = Some(item.id.clone());
+                            *open_now = true;
+                        }
+                    }
+                });
+                ui.add_space(GAP);
+            }
+        },
+    );
+}
+
+fn plugin_catalog_details(ui: &mut Ui, state: &mut AppState, lib: &mut Library) {
+    let Some(id) = lib.catalog_selected.clone() else {
+        centered(ui, |ui| {
+            ui.label(theme::muted(t!("lib-pick-prompt")));
+        });
+        return;
+    };
+    let Some(item) = state.plugin_catalog.items.iter().find(|i| i.id == id).cloned() else { return };
+    egui::ScrollArea::vertical().id_salt("lib-plugin-details").auto_shrink([false, false]).show(ui, |ui| {
+        let width = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(vec2(width, width * 2.0 / 3.0), Sense::hover());
+        if item.has_thumbnail {
+            state.plugin_catalog.want_thumbnail(&item.id);
+        }
+        let thumb = state.plugin_catalog.thumbnail(&item.id).cloned();
+        picture(ui, state, lib, rect, thumb.as_deref(), None, CornerRadius::same(4));
+        ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.0, PALETTE.border), StrokeKind::Inside);
+        ui.add_space(6.0);
+        ui.add(egui::Label::new(theme::title(&item.name)).wrap());
+        if !item.subtitle.is_empty() {
+            ui.add(egui::Label::new(theme::muted(&item.subtitle)).wrap());
+        }
+        if !item.article.is_empty() {
+            ui.add_space(4.0);
+            ui.label(RichText::new(&item.article).monospace().size(11.5));
+        }
+        if !item.kind.is_empty() {
+            ui.label(theme::muted(kind_label(&item.kind)).size(11.0));
+        }
+        if !item.colors.is_empty() {
+            ui.label(theme::muted(item.colors.join(", ")).size(11.0));
+        }
+        let dims: Vec<String> = [
+            item.width.map(|v| format!("W {}", cc_views::format::meters(v))),
+            item.depth.map(|v| format!("D {}", cc_views::format::meters(v))),
+            item.height.map(|v| format!("H {}", cc_views::format::meters(v))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !dims.is_empty() {
+            ui.add_space(4.0);
+            ui.label(theme::muted(dims.join(" × ")).size(11.5));
+        }
+        if item.bytes > 0 {
+            ui.label(theme::muted(format!("{:.0} KB", item.bytes as f64 / 1024.0)).size(11.0));
+        }
+        if item.url.starts_with("https://") {
+            ui.add_space(8.0);
+            if ui.button(t!("lib-open-website")).clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(&item.url));
+            }
+        }
+        if state.plugin_catalog.preparing.as_deref() == Some(item.id.as_str()) {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(theme::muted(t!("lib-catalog-loading")));
+            });
+        }
+        if let Some(err) = &state.plugin_catalog.prepare_error {
+            ui.add_space(6.0);
+            ui.label(RichText::new(err).color(PALETTE.danger).size(11.5));
         }
     });
 }

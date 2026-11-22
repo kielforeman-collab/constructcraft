@@ -39,7 +39,7 @@
 ---The `ccad` table.
 ---@class ccad
 ---@field version string The ConstructCraft version.
----@field api integer The plugin API version this build provides (2).
+---@field api integer The plugin API version this build provides (3).
 ---@field null ccad.Null JSON null.
 ---@field args table Scripts only: the script's arguments (also `...`).
 ---@field json ccad.json
@@ -48,6 +48,7 @@
 ---@field data ccad.data Plugins only: its own data in the project.
 ---@field file ccad.file Plugins only: the files a command's arguments grant.
 ---@field process ccad.process Plugins only: run the external programs the user chose.
+---@field http ccad.http Plugins only (API 3): scoped HTTPS requests and per-plugin file cache.
 ---@field test ccad.test Tests only (`ccad plugins test`): assertions.
 ccad = {}
 
@@ -83,6 +84,10 @@ function ccad.array(t) end
 ---@param spec ccad.CommandSpec
 function ccad.command(spec) end
 
+---Plugins only (API 3), while `main.lua` loads: register a Component Library catalog provider.
+---@param spec ccad.CatalogSpec
+function ccad.catalog(spec) end
+
 ---Plugins only, while `main.lua` loads: run `handler` on a session event.
 ---@overload fun(event: "project_opened", handler: fun(e: ccad.ProjectOpenedEvent))
 ---@overload fun(event: "project_saving", handler: fun(e: ccad.ProjectSavedEvent))
@@ -91,6 +96,37 @@ function ccad.command(spec) end
 ---@param event ccad.EventName
 ---@param handler fun(e: table)
 function ccad.on(event, handler) end
+
+---Scoped HTTPS requests and isolated per-plugin cache (API 3, `network` permission).
+---@class ccad.http
+ccad.http = {}
+
+---GET an HTTPS URL whose host is in `allowed_hosts`.
+---@param url string
+---@param options? { max_bytes?: integer, timeout?: integer }
+---@return string body
+---@return integer status
+function ccad.http.get(url, options) end
+
+---Download an HTTPS URL into the plugin's cache under `key` (optionally verifying `sha256`).
+---@param url string
+---@param key string
+---@param options? { sha256?: string, max_bytes?: integer, timeout?: integer }
+---@return string path
+function ccad.http.download(url, key, options) end
+
+---Return the local path of `key` in the plugin's cache if present (never uses the network).
+---@param key string
+---@param options? { sha256?: string }
+---@return string|nil path
+function ccad.http.cached(key, options) end
+
+---@class ccad.CatalogSpec
+---@field id string
+---@field load fun(): table
+---@field search fun(query: table): table
+---@field thumbnail? fun(item_id: string): string|nil
+---@field prepare fun(item_id: string): table
 
 ---JSON text to and from Lua values.
 ---@class ccad.json
