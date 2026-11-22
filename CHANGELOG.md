@@ -19,6 +19,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - 3D views of the reinforcement placed on sheets, or exported, showed only the bars: the 3D view shows them over the model drawn faint, but its 2D form left the model out, so the bars of a footing stood alone on a sheet. They are now drawn over the model's hidden-line view faded, and a bar seen end-on (the vertical bars of a column seen from above, the leg of a starter bar above its foot) is a dot as wide as the bar, at least 0.35 mm on paper, instead of nothing, as plans and sections draw it.
 - Cross-ties showed as straight bars in bending schedules (#438). The ties of a column (`rebar_create` `ties`) and of a wall (`wall_rebar_create` `ties`) counted their two hooks in their length but were read as one straight leg as long as the whole bar, so a 20 cm tie of 5 mm bar was written `straight 32`. A tie now carries its hooks as a stirrup does: its shape is the bar between the bars it holds with a hook leg at each end, bent by the hook's angle, both to one side in a column (a C) and to opposite sides in a wall (an S). The bending schedule writes it `tie 20 hook 135° 5 hook 180° 5` and sketches it with its hooks, bar marks tell C and S ties and different hooks apart, and lengths and weights are unchanged. Since a tie's shape changes, a project whose bar marks were frozen (`bar_marks_update`) gives its ties a new mark the next time marks are updated, and the old mark, matching no bar any more, stays listed until `bar_marks_update` `drop_unused`; marks already issued on drawings should be checked.
 
+## [0.14.0-ikea.1] - 2026-11-22
+
+### Added
+
+- Pure-Rust Draco mesh decoding (`KHR_draco_mesh_compression`) in `cc_engine::gltf` using `draco-core`.
+- `gltf_component_load` engine command to load `.glb`/`.gltf` files as reusable components with optional `name`, `kind`, `ifc_class`, and IFC `PropertySet` metadata.
+- Plugin API 3: `permissions = ["network"]` with `allowed_hosts`, scoped HTTPS & SHA-256-verified per-plugin cache (`ccad.http.{get,download,cached,read_cached}`), and `[[catalogs]]` Component Library providers (`ccad.catalog`).
+- Dynamic plugin catalog tabs in the Component Library window (`Source::PluginCatalog`) with category, color, and max W/D/H dimension filters, lazy thumbnails, and *Open Website* links.
+- Clickable `https://` links in the Properties panel and *Allow network access* permission controls in Manage → Plugins.
+
 ## [0.14.0] - 2026-11-22
 
 ### Added
