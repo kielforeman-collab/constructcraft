@@ -355,4 +355,14 @@ fn gltf_component_load_sets_kind_and_ifc_properties() {
     assert_eq!(ifc.properties.len(), 1);
     assert_eq!(ifc.properties[0].name, "Pset_IkeaProduct");
     assert_eq!(ifc.properties[0].properties.len(), 3);
+
+    // Place an instance and verify IFC4 export emits IFCFURNITURE + Pset_IkeaProduct.
+    let placed = run(&mut s, "component_place", json!({ "type": ty_id.0, "position": [1.0, 2.0] }));
+    assert!(placed["id"].as_u64().is_some(), "{placed}");
+    let ifc_path = scratch("omar.ifc");
+    run(&mut s, "ifc_export", json!({ "path": ifc_path }));
+    let step = std::fs::read_to_string(&ifc_path).unwrap();
+    assert!(step.contains("IFCFURNITURE"), "expected IFCFURNITURE in IFC export");
+    assert!(step.contains("Pset_IkeaProduct"), "expected Pset_IkeaProduct in IFC export");
+    assert!(step.contains("000.697.68"), "expected article number in IFC export");
 }

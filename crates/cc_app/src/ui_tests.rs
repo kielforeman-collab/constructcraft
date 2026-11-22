@@ -8085,3 +8085,50 @@ fn flat_roofs_list_edge_overhangs() {
         .count();
     assert_eq!(rows, 4, "an overhang row per edge");
 }
+
+/// Plugin API 3 catalog tab renders categories, color/dimension filters, item cards, and Open Website button.
+#[test]
+fn plugin_catalog_tab_shows_categories_colors_and_details() {
+    let mut state = sample_state();
+    state.plugins.catalogs.push(cc_plugins::Catalog {
+        plugin_id: "ikea_browser".into(),
+        plugin_name: "IKEA Browser".into(),
+        id: "ikea".into(),
+        label: "IKEA".into(),
+        description: "Test catalog".into(),
+    });
+    state.prefs.plugins_network.insert("ikea_browser".into());
+    state.plugin_catalog.set_loaded(
+        "ikea_browser",
+        "ikea",
+        vec![crate::plugin_catalog::CatalogCategory { id: "st001".into(), name: "Storage".into(), count: 1 }],
+        vec!["galvanized".into()],
+        vec![crate::plugin_catalog::CatalogItem {
+            id: "00069768".into(),
+            name: "OMAR".into(),
+            subtitle: "Shelf unit".into(),
+            kind: "casework".into(),
+            article: "000.697.68".into(),
+            bytes: 211_088,
+            width: Some(0.46),
+            depth: Some(0.355),
+            height: Some(0.94),
+            colors: vec!["galvanized".into()],
+            url: "https://www.ikea.com/us/en/p/omar-shelf-unit-galvanized-00069768/".into(),
+            has_thumbnail: false,
+        }],
+    );
+    crate::library::open(&mut state);
+    if let Some(lib) = state.dialogs.library.as_mut() {
+        lib.source = crate::library::Source::PluginCatalog(0);
+        lib.catalog_selected = Some("00069768".into());
+    }
+    let mut harness = themed_harness(state, egui::vec2(1240.0, 760.0), egui::Theme::Light, |ui, state| {
+        crate::library::show(ui.ctx(), state);
+    });
+    harness.run();
+    assert!(harness.query_by_label("IKEA").is_some(), "plugin catalog tab shown");
+    assert_eq!(harness.query_all_by_label("OMAR").count(), 2, "item card and details title shown");
+    assert!(harness.query_by_label("000.697.68").is_some(), "article number shown");
+    assert!(harness.query_by_role_and_label(Role::Button, &t!("lib-open-website")).is_some(), "Open Website shown");
+}

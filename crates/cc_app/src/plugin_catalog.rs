@@ -268,6 +268,25 @@ impl PluginCatalogClient {
             let _ = tx.send(WorkerReq::Prepare(item_id.to_string()));
         }
     }
+
+    /// Inject loaded catalog state in UI tests without touching the network.
+    #[cfg(test)]
+    pub fn set_loaded(
+        &mut self,
+        plugin_id: &str,
+        catalog_id: &str,
+        categories: Vec<CatalogCategory>,
+        colors: Vec<String>,
+        items: Vec<CatalogItem>,
+    ) {
+        self.active = Some((plugin_id.to_string(), catalog_id.to_string()));
+        self.total_matches = items.len();
+        self.state = LoadState::Ready { total: items.len(), notice: String::new() };
+        self.categories = categories;
+        self.colors = colors;
+        self.items = items;
+        self.last_query = Some(CatalogQuery::default());
+    }
 }
 
 fn run_load(plugin: &mut Plugin, cid: &str) -> Result<(usize, String, Vec<CatalogCategory>, Vec<String>), String> {

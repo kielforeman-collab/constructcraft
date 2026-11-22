@@ -166,6 +166,37 @@ pub fn cached_file(
     Ok(Some(path))
 }
 
+/// Read the bytes of an already-cached file (up to `max_bytes`), verifying
+/// `expected_sha256` when provided. Never touches the network.
+pub fn read_cached_bytes(
+    cache_root: &Path,
+    cache_key: &str,
+    max_bytes: usize,
+    expected_sha256: Option<&str>,
+) -> Result<Option<Vec<u8>>, String> {
+    let rel = validate_cache_key(cache_key)?;
+    let expected = expected_sha256.map(normalize_sha256).transpose()?;
+    let limit = max_bytes.min(MAX_RESPONSE_BYTES);
+    let path = cache_root.join(rel);
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return Ok(None);
+    };
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    if meta.len() > limit as u64 {
+        return Err(format!("cached file exceeds limit of {limit} bytes"));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    if let Some(expected) = expected
+        && sha256_hex(&bytes) != expected
+    {
+        let _ = std::fs::remove_file(&path);
+        return Ok(None);
+    }
+    Ok(Some(bytes))
+}
+
 /// Fetch `url` over HTTPS, checking `allowed_hosts` on the initial request and
 /// on every redirect, capped at `max_bytes` and `timeout_secs`.
 pub fn fetch_bytes(

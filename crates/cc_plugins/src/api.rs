@@ -97,6 +97,7 @@ local http = {}
 function http.get(url, options) return get("http_get", "http.get")(url, options) end
 function http.download(url, key, options) return get("http_download", "http.download")(url, key, options) end
 function http.cached(key, options) return get("http_cached", "http.cached")(key, options) end
+function http.read_cached(key, options) return get("http_read_cached", "http.read_cached")(key, options) end
 ccad.http = http
 "#;
 
@@ -714,9 +715,23 @@ fn bind_http<'lua, 'scope>(
         let found = crate::http::cached_file(&http.cache_root, &key, sha256.as_deref()).map_err(err)?;
         Ok(found.map(|p| p.to_string_lossy().into_owned()))
     })?;
+    let read_cached_fn = scope.create_function(move |lua, (key, opts): (String, Option<Table>)| {
+        let max_bytes = opts
+            .as_ref()
+            .and_then(|o| o.get::<Option<usize>>("max_bytes").ok().flatten())
+            .unwrap_or(crate::http::DEFAULT_GET_BYTES);
+        let sha256 = opts.as_ref().and_then(|o| o.get::<Option<String>>("sha256").ok().flatten());
+        let found =
+            crate::http::read_cached_bytes(&http.cache_root, &key, max_bytes, sha256.as_deref()).map_err(err)?;
+        match found {
+            Some(bytes) => Ok(LuaValue::String(lua.create_string(&bytes)?)),
+            None => Ok(LuaValue::Nil),
+        }
+    })?;
     imp.raw_set("http_get", get_fn)?;
     imp.raw_set("http_download", download_fn)?;
     imp.raw_set("http_cached", cached_fn)?;
+    imp.raw_set("http_read_cached", read_cached_fn)?;
     Ok(())
 }
 
