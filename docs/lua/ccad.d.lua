@@ -121,6 +121,12 @@ function ccad.http.download(url, key, options) end
 ---@return string|nil path
 function ccad.http.cached(key, options) end
 
+---Read the bytes of `key` from the plugin's cache if present (never uses the network).
+---@param key string
+---@param options? { sha256?: string, max_bytes?: integer }
+---@return string|nil body
+function ccad.http.read_cached(key, options) end
+
 ---@class ccad.CatalogSpec
 ---@field id string
 ---@field load fun(): table

@@ -135,3 +135,58 @@ ccad.catalog {
     let err = plugin.catalog_prepare("furniture", "net_test").unwrap_err();
     assert!(err.message.contains("network permission"), "unexpected error: {}", err.message);
 }
+
+#[test]
+fn read_cached_reads_valid_cache_and_evicts_sha256_mismatch() {
+    let dir = temp_plugin(
+        "cat_cache",
+        r#"
+id = "cat_cache"
+name = "Cache Test"
+version = "0.1.0"
+api = 3
+permissions = ["network"]
+allowed_hosts = ["huggingface.co"]
+
+[[catalogs]]
+id = "c"
+label = "C"
+"#,
+        r#"
+ccad.catalog {
+    id = "c",
+    load = function()
+        local raw = ccad.http.read_cached("data/manifest.json")
+        return { raw = raw }
+    end,
+    search = function(q)
+        local raw = ccad.http.read_cached("data/manifest.json", { sha256 = q.sha256 })
+        return { found = raw ~= nil }
+    end,
+    prepare = function(_) return {} end,
+}
+"#,
+    );
+
+    let mut plugin = Plugin::load(&dir, Limits::default()).unwrap();
+    let cache = plugin.cache_root().join("data");
+    std::fs::create_dir_all(&cache).unwrap();
+    let payload = br#"{"version":1}"#;
+    let file = cache.join("manifest.json");
+    std::fs::write(&file, payload).unwrap();
+
+    // Reads cached JSON without network permission.
+    let loaded = plugin.catalog_load("c").unwrap();
+    assert_eq!(loaded["raw"], json!(r#"{"version":1}"#));
+
+    // Correct SHA-256 passes.
+    let good = cc_plugins::http::sha256_hex(payload);
+    let ok = plugin.catalog_search("c", json!({ "sha256": good })).unwrap();
+    assert_eq!(ok["found"], json!(true));
+
+    // Wrong SHA-256 returns nil and removes the corrupted cache file.
+    let bad = "0".repeat(64);
+    let miss = plugin.catalog_search("c", json!({ "sha256": bad })).unwrap();
+    assert_eq!(miss["found"], json!(false));
+    assert!(!file.exists(), "corrupted cache file should be evicted");
+}

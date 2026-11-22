@@ -99,6 +99,10 @@ pub struct Library {
     pub catalog_category: Option<String>,
     /// Active color filter for a plugin catalog source.
     pub catalog_color: Option<String>,
+    /// Optional max dimension filters (in project units) for a plugin catalog source.
+    pub catalog_max_w: String,
+    pub catalog_max_d: String,
+    pub catalog_max_h: String,
     /// Selected item id for a plugin catalog source.
     pub catalog_selected: Option<String>,
     /// Plan outlines of the selected component (for its thumbnail).
@@ -337,11 +341,17 @@ fn body(
                 let net = state.prefs.plugins_network.contains(&cat.plugin_id);
                 state.plugin_catalog.activate(ui.ctx(), &cat.plugin_id, &cat.id, &listed.dir, folder.as_deref(), net);
             }
+            let parse_dim = |s: &str| {
+                let s = s.trim();
+                (!s.is_empty()).then(|| cc_views::format::parse_length(s)).flatten().filter(|v| *v > 0.0)
+            };
             let query = crate::plugin_catalog::CatalogQuery {
                 text: lib.search.clone(),
                 category: lib.catalog_category.clone(),
                 color: lib.catalog_color.clone(),
-                ..Default::default()
+                max_width: parse_dim(&lib.catalog_max_w),
+                max_depth: parse_dim(&lib.catalog_max_d),
+                max_height: parse_dim(&lib.catalog_max_h),
             };
             if let Some(prepared) = state.plugin_catalog.sync(&query) {
                 *prepared_ready = Some(prepared);
@@ -1051,6 +1061,33 @@ fn plugin_catalog_sidebar(ui: &mut Ui, state: &mut AppState, lib: &mut Library, 
                             lib.catalog_category = Some(c.id.clone());
                         }
                     }
+                }
+                let colors = state.plugin_catalog.colors.clone();
+                if !colors.is_empty() {
+                    ui.add_space(8.0);
+                    section_title(ui, t!("lib-filter-color"));
+                    let selected_color = lib.catalog_color.clone().unwrap_or_else(|| t!("lib-all-kinds"));
+                    egui::ComboBox::from_id_salt("lib-plugin-color")
+                        .selected_text(selected_color)
+                        .width(ui.available_width().min(176.0))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut lib.catalog_color, None, t!("lib-all-kinds"));
+                            for c in &colors {
+                                ui.selectable_value(&mut lib.catalog_color, Some(c.clone()), c);
+                            }
+                        });
+                }
+                ui.add_space(8.0);
+                section_title(ui, t!("lib-filter-max-dims"));
+                for (label, buf) in [
+                    (t!("lib-dim-w"), &mut lib.catalog_max_w),
+                    (t!("lib-dim-d"), &mut lib.catalog_max_d),
+                    (t!("lib-dim-h"), &mut lib.catalog_max_h),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(theme::muted(label).size(11.0));
+                        ui.add(egui::TextEdit::singleline(buf).desired_width(110.0));
+                    });
                 }
             });
         });
