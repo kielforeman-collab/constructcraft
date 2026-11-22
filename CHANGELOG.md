@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.14.0-ikea.1] - 2026-11-22
+
+### Added
+
+- Pure-Rust Draco mesh decoding (`KHR_draco_mesh_compression`) in `cc_engine::gltf` using `draco-core`.
+- `gltf_component_load` engine command to load `.glb`/`.gltf` files as reusable components with optional `name`, `kind`, `ifc_class`, and IFC `PropertySet` metadata.
+- Plugin API 3: `permissions = ["network"]` with `allowed_hosts`, scoped HTTPS & SHA-256-verified per-plugin cache (`ccad.http.{get,download,cached,read_cached}`), and `[[catalogs]]` Component Library providers (`ccad.catalog`).
+- Dynamic plugin catalog tabs in the Component Library window (`Source::PluginCatalog`) with category, color, and max W/D/H dimension filters, lazy thumbnails, and *Open Website* links.
+- Clickable `https://` links in the Properties panel and *Allow network access* permission controls in Manage → Plugins.
+
 ## [0.14.0] - 2026-11-22
 
 ### Added
