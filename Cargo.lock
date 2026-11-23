@@ -730,6 +730,7 @@ dependencies = [
  "egui_kittest",
  "env_logger",
  "glam",
+ "image",
  "log",
  "png 0.18.1",
  "resvg",
