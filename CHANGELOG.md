@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.14.0-ikea.4] - 2026-11-22
+
+### Added
+
+- Configured a persistent plugin cache directory in `ccad` (`cc_cli`) so Plugin API 3 network commands work over `ccad mcp` and `ccad run`.
+- Added `Grants::grant_read_dir` in `cc_engine::files` and granted network plugins read-only access to their own isolated cache directory inside `ccad.command` runs, allowing commands like `ikea_browser__place` to invoke `gltf_component_load` without requiring broad `files` permission.
+
 ## [0.14.0-ikea.3] - 2026-11-22
 
 ### Fixed

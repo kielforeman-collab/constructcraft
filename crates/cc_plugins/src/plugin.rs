@@ -888,10 +888,14 @@ impl Plugin {
         if let Some(missing) = command.required.iter().find(|k| args.get(k.as_str()).is_none()) {
             return fail(EngineError::invalid(format!("{name}: missing field `{missing}`")));
         }
-        let grants = match grants(&name, &command.info.input_schema, &args) {
+        let mut grants = match grants(&name, &command.info.input_schema, &args) {
             Ok(g) => g,
             Err(e) => return fail(e),
         };
+        if self.granted.network && !self.cache_root.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(&self.cache_root);
+            let _ = grants.grant_read_dir(&self.cache_root);
+        }
         let scope = PluginScope {
             plugin: self.manifest.id.clone(),
             edits: if kind == CommandKind::Query { ScopeEdits::None } else { ScopeEdits::All },

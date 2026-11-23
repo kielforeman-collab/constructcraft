@@ -157,7 +157,21 @@ fn plugins(o: &Options) -> cc_plugins::PluginHost {
             eprintln!("ccad: --tool {plugin}.{tool}: {e}");
         }
     }
+    host.set_cache_dir(&default_plugin_cache_dir());
     host
+}
+
+fn default_plugin_cache_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
+        return PathBuf::from(dir).join("constructcraft").join("plugin-cache");
+    }
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) {
+        return PathBuf::from(dir).join("ConstructCAD").join("plugin-cache");
+    }
+    if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
+        return PathBuf::from(home).join(".cache").join("constructcraft").join("plugin-cache");
+    }
+    std::env::temp_dir().join("constructcraft-plugin-cache")
 }
 
 /// The session for the options: a new project, or the given file (`.ifc`

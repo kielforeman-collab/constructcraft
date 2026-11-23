@@ -24,6 +24,7 @@ use std::path::{Component, Path, PathBuf};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grants {
     read: BTreeSet<PathBuf>,
+    read_dirs: BTreeSet<PathBuf>,
     write: BTreeSet<PathBuf>,
 }
 
@@ -39,6 +40,14 @@ impl Grants {
         Ok(key)
     }
 
+    /// Grant reading any existing file inside `dir` (for example, a plugin's
+    /// own isolated download cache).
+    pub fn grant_read_dir(&mut self, dir: &Path) -> Result<PathBuf, String> {
+        let key = std::fs::canonicalize(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        self.read_dirs.insert(key.clone());
+        Ok(key)
+    }
+
     /// Grant writing `path` (a file in an existing folder); returns its key.
     pub fn grant_write(&mut self, path: &Path) -> Result<PathBuf, String> {
         let key = write_key(path)?;
@@ -48,7 +57,7 @@ impl Grants {
 
     /// Whether `path` may be read.
     pub fn may_read(&self, path: &Path) -> bool {
-        read_key(path).is_ok_and(|k| self.read.contains(&k))
+        read_key(path).is_ok_and(|k| self.read.contains(&k) || self.read_dirs.iter().any(|d| k.starts_with(d)))
     }
 
     /// Whether `path` may be written.
@@ -69,6 +78,7 @@ impl Grants {
     fn both(&self, other: &Grants) -> Grants {
         Grants {
             read: self.read.intersection(&other.read).cloned().collect(),
+            read_dirs: self.read_dirs.intersection(&other.read_dirs).cloned().collect(),
             write: self.write.intersection(&other.write).cloned().collect(),
         }
     }
