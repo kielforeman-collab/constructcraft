@@ -1149,30 +1149,41 @@ fn plugin_catalog_grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, ope
                         let Some(item) = items.get(r * cols + c) else { break };
                         let selected = lib.catalog_selected.as_deref() == Some(item.id.as_str());
                         let (rect, response) = ui.allocate_exact_size(vec2(card_w, card_h), Sense::click());
-                        let pic_rect = Rect::from_min_size(rect.min, vec2(card_w, pic_h));
-                        ui.painter().rect_filled(rect, CARD_RADIUS, PALETTE.canvas);
-                        if item.has_thumbnail {
-                            state.plugin_catalog.want_thumbnail(&item.id);
-                        }
-                        let thumb = state.plugin_catalog.thumbnail(&item.id).cloned();
-                        let corners = CornerRadius { nw: CARD_RADIUS - 1, ne: CARD_RADIUS - 1, sw: 0, se: 0 };
-                        picture(ui, state, lib, pic_rect.shrink(1.0), thumb.as_deref(), None, corners);
-                        let stroke = if selected {
-                            Stroke::new(2.0, PALETTE.accent)
-                        } else if response.hovered() {
-                            Stroke::new(1.0, PALETTE.text_muted)
-                        } else {
-                            Stroke::new(1.0, PALETTE.border)
-                        };
-                        ui.painter().rect_stroke(rect, CARD_RADIUS, stroke, StrokeKind::Inside);
-                        let text_rect = Rect::from_min_max(
-                            Pos2::new(rect.left() + 6.0, pic_rect.bottom() + 4.0),
-                            Pos2::new(rect.right() - 6.0, rect.bottom() - 4.0),
-                        );
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
-                            ui.add(egui::Label::new(RichText::new(&item.name).strong().size(11.5)).truncate());
-                            ui.add(egui::Label::new(theme::muted(&item.subtitle).size(10.5)).truncate());
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &item.name)
                         });
+                        if ui.is_rect_visible(rect) {
+                            let pic_rect = Rect::from_min_size(rect.min, vec2(card_w, pic_h));
+                            ui.painter().rect_filled(rect, CARD_RADIUS, PALETTE.canvas);
+                            if item.has_thumbnail {
+                                state.plugin_catalog.want_thumbnail(&item.id);
+                            }
+                            let thumb = state.plugin_catalog.thumbnail(&item.id).cloned();
+                            let corners = CornerRadius { nw: CARD_RADIUS - 1, ne: CARD_RADIUS - 1, sw: 0, se: 0 };
+                            picture(ui, state, lib, pic_rect.shrink(1.0), thumb.as_deref(), None, corners);
+                            let stroke = if selected {
+                                Stroke::new(2.0, PALETTE.accent)
+                            } else if response.hovered() {
+                                Stroke::new(1.0, PALETTE.text_muted)
+                            } else {
+                                Stroke::new(1.0, PALETTE.border)
+                            };
+                            ui.painter().rect_stroke(rect, CARD_RADIUS, stroke, StrokeKind::Inside);
+                            let text_w = (card_w - 16.0).max(0.0);
+                            let title =
+                                one_line(ui, RichText::new(&item.name).family(theme::semibold()).size(12.5), text_w);
+                            ui.painter().galley(
+                                Pos2::new(rect.left() + 8.0, pic_rect.bottom() + 6.0),
+                                title,
+                                PALETTE.text,
+                            );
+                            let sub = one_line(ui, theme::muted(&item.subtitle).size(11.5), text_w);
+                            ui.painter().galley(
+                                Pos2::new(rect.left() + 8.0, pic_rect.bottom() + 24.0),
+                                sub,
+                                PALETTE.text_muted,
+                            );
+                        }
                         if response.clicked() {
                             lib.catalog_selected = Some(item.id.clone());
                         }
@@ -1221,9 +1232,9 @@ fn plugin_catalog_details(ui: &mut Ui, state: &mut AppState, lib: &mut Library) 
             ui.label(theme::muted(item.colors.join(", ")).size(11.0));
         }
         let dims: Vec<String> = [
-            item.width.map(|v| format!("W {}", cc_views::format::meters(v))),
-            item.depth.map(|v| format!("D {}", cc_views::format::meters(v))),
-            item.height.map(|v| format!("H {}", cc_views::format::meters(v))),
+            item.width.map(|v| format!("{} {}", t!("lib-dim-w"), cc_views::format::meters(v))),
+            item.depth.map(|v| format!("{} {}", t!("lib-dim-d"), cc_views::format::meters(v))),
+            item.height.map(|v| format!("{} {}", t!("lib-dim-h"), cc_views::format::meters(v))),
         ]
         .into_iter()
         .flatten()
@@ -1233,7 +1244,7 @@ fn plugin_catalog_details(ui: &mut Ui, state: &mut AppState, lib: &mut Library) 
             ui.label(theme::muted(dims.join(" × ")).size(11.5));
         }
         if item.bytes > 0 {
-            ui.label(theme::muted(format!("{:.0} KB", item.bytes as f64 / 1024.0)).size(11.0));
+            ui.label(theme::muted(crate::jobs::size_text(item.bytes)).size(11.0));
         }
         if item.url.starts_with("https://") {
             ui.add_space(8.0);
@@ -1250,7 +1261,8 @@ fn plugin_catalog_details(ui: &mut Ui, state: &mut AppState, lib: &mut Library) 
         }
         if let Some(err) = &state.plugin_catalog.prepare_error {
             ui.add_space(6.0);
-            ui.label(RichText::new(err).color(PALETTE.danger).size(11.5));
+            let msg = t!("lib-online-download-failed", "message" => err.as_str());
+            ui.label(RichText::new(msg).color(PALETTE.danger).size(11.5));
         }
     });
 }

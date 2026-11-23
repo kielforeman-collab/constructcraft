@@ -251,7 +251,7 @@ fn resolve_redirect(base: &str, location: &str) -> Result<String, String> {
     if location.starts_with("https://") {
         return Ok(location.to_string());
     }
-    if location.starts_with('/') {
+    if location.starts_with('/') && !location.starts_with("//") {
         let host = extract_https_host(base)?;
         return Ok(format!("https://{host}{location}"));
     }
@@ -285,7 +285,9 @@ pub fn download_cached(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create cache dir: {e}"))?;
     }
-    let tmp = dest.with_extension("part");
+    let mut tmp_name = dest.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".part");
+    let tmp = dest.with_file_name(tmp_name);
     std::fs::write(&tmp, &bytes).map_err(|e| format!("write cache file: {e}"))?;
     std::fs::rename(&tmp, &dest).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -330,6 +332,17 @@ mod tests {
         assert!(validate_cache_key("/abs/path.glb").is_err());
         assert!(validate_cache_key("a\\b.glb").is_err());
         assert!(validate_cache_key("").is_err());
+    }
+
+    #[test]
+    fn resolve_redirect_rejects_protocol_relative_and_http() {
+        assert_eq!(resolve_redirect("https://huggingface.co/a/b", "/c/d").unwrap(), "https://huggingface.co/c/d");
+        assert_eq!(
+            resolve_redirect("https://huggingface.co/a/b", "https://cdn.hf.co/x").unwrap(),
+            "https://cdn.hf.co/x"
+        );
+        assert!(resolve_redirect("https://huggingface.co/a/b", "//evil.example/x").is_err());
+        assert!(resolve_redirect("https://huggingface.co/a/b", "http://huggingface.co/x").is_err());
     }
 
     #[test]
