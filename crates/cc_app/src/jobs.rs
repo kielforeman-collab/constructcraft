@@ -136,7 +136,7 @@ pub fn cancel(state: &mut AppState) {
 }
 
 /// A size in bytes for people (KB, MB, GB with one decimal).
-fn size_text(bytes: u64) -> String {
+pub(crate) fn size_text(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
     let mut value = bytes as f64;
     let mut unit = 0;
