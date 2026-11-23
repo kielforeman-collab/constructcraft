@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.14.0-ikea.3] - 2026-11-22
+
+### Fixed
+
+- Added `widget_info` accessibility metadata and visibility culling to plugin catalog cards in the Component Library.
+- Localized plugin catalog dimension prefixes, byte-size formatting (`jobs::size_text`), and component download error messages.
+- Hardened Plugin API 3 HTTP redirect resolution against protocol-relative (`//`) redirects and avoided `.part` temp-file collisions on shared filename stems.
+
 ## [0.14.0-ikea.2] - 2026-11-22
 
 ### Fixed
