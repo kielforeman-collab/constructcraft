@@ -19,6 +19,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - 3D views of the reinforcement placed on sheets, or exported, showed only the bars: the 3D view shows them over the model drawn faint, but its 2D form left the model out, so the bars of a footing stood alone on a sheet. They are now drawn over the model's hidden-line view faded, and a bar seen end-on (the vertical bars of a column seen from above, the leg of a starter bar above its foot) is a dot as wide as the bar, at least 0.35 mm on paper, instead of nothing, as plans and sections draw it.
 - Cross-ties showed as straight bars in bending schedules (#438). The ties of a column (`rebar_create` `ties`) and of a wall (`wall_rebar_create` `ties`) counted their two hooks in their length but were read as one straight leg as long as the whole bar, so a 20 cm tie of 5 mm bar was written `straight 32`. A tie now carries its hooks as a stirrup does: its shape is the bar between the bars it holds with a hook leg at each end, bent by the hook's angle, both to one side in a column (a C) and to opposite sides in a wall (an S). The bending schedule writes it `tie 20 hook 135° 5 hook 180° 5` and sketches it with its hooks, bar marks tell C and S ties and different hooks apart, and lengths and weights are unchanged. Since a tie's shape changes, a project whose bar marks were frozen (`bar_marks_update`) gives its ties a new mark the next time marks are updated, and the old mark, matching no bar any more, stays listed until `bar_marks_update` `drop_unused`; marks already issued on drawings should be checked.
 
+## [0.14.0-ikea.4] - 2026-11-22
+
+### Added
+
+- Configured a persistent plugin cache directory in `ccad` (`cc_cli`) so Plugin API 3 network commands work over `ccad mcp` and `ccad run`.
+- Added `Grants::grant_read_dir` in `cc_engine::files` and granted network plugins read-only access to their own isolated cache directory inside `ccad.command` runs, allowing commands like `ikea_browser__place` to invoke `gltf_component_load` without requiring broad `files` permission.
+
 ## [0.14.0-ikea.3] - 2026-11-22
 
 ### Fixed
