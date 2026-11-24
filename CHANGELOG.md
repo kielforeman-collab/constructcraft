@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.14.1-ikea.1] - 2026-11-23
+
+### Changed
+
+- Rebased `feat/ikea-browser` (pure-Rust Draco glTF decoding, `gltf_component_load`, Plugin API 3 network/catalogs, Component Library plugin catalog tabs, and `ccad` CLI/MCP network plugin cache support) onto upstream ConstructCraft `0.14.1`.
+
 ## [0.14.1] - 2026-11-23
 
 ### Added
