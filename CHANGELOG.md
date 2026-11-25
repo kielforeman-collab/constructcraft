@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.14.1-ikea.2] - 2026-11-24
+
+### Fixed
+
+- Prioritized `Load` > `Prepare` > latest `Search` > `Thumbnail` in `cc_app::plugin_catalog` and coalesced stale keystroke searches so typing and component loads never block behind queued thumbnail downloads.
+- Rejected pre-existing symlinks on plugin cache write targets in `cc_plugins::http::download_cached`.
+
 ## [0.14.1-ikea.1] - 2026-11-23
 
 ### Changed
