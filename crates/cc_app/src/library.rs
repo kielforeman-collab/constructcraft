@@ -1119,13 +1119,16 @@ fn plugin_catalog_grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, ope
     if let Some(err) = state.plugin_catalog.search_error.clone() {
         ui.label(RichText::new(err).color(PALETTE.danger).size(11.5));
     }
-    let items = state.plugin_catalog.items.clone();
     let total = state.plugin_catalog.total_matches;
     ui.label(theme::muted(format!("{total}")).size(11.5));
     ui.add_space(4.0);
-    if items.is_empty() {
+    if total == 0 {
         centered(ui, |ui| {
-            ui.label(theme::muted(t!("lib-none")));
+            if state.plugin_catalog.is_searching_initial() {
+                ui.spinner();
+            } else {
+                ui.label(theme::muted(t!("lib-none")));
+            }
         });
         return;
     }
@@ -1135,9 +1138,7 @@ fn plugin_catalog_grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, ope
     let card_w = ((width - GAP * (cols.saturating_sub(1)) as f32) / cols as f32).max(CARD * 0.75);
     let pic_h = card_w * 2.0 / 3.0;
     let card_h = pic_h + CARD_TEXT;
-    let has_more = items.len() < total;
-    let item_rows = items.len().div_ceil(cols);
-    let rows = item_rows + usize::from(has_more);
+    let rows = total.div_ceil(cols);
 
     egui::ScrollArea::vertical().id_salt("lib-plugin-grid").auto_shrink([false, false]).show_rows(
         ui,
@@ -1145,21 +1146,30 @@ fn plugin_catalog_grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, ope
         rows,
         |ui, range| {
             for r in range {
-                if r >= item_rows {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(12.0);
-                        if state.plugin_catalog.loading_more {
-                            ui.spinner();
-                        } else if ui.button(t!("lib-load-more")).clicked() {
-                            state.plugin_catalog.load_more();
-                        }
-                    });
-                    continue;
-                }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = GAP;
                     for c in 0..cols {
-                        let Some(item) = items.get(r * cols + c) else { break };
+                        let idx = r * cols + c;
+                        if idx >= total {
+                            break;
+                        }
+                        let Some(item) = state.plugin_catalog.item_at(idx).cloned() else {
+                            let (rect, _) = ui.allocate_exact_size(vec2(card_w, card_h), Sense::hover());
+                            if ui.is_rect_visible(rect) {
+                                state.plugin_catalog.want_index(idx);
+                                let pic_rect = Rect::from_min_size(rect.min, vec2(card_w, pic_h));
+                                ui.painter().rect_filled(rect, CARD_RADIUS, PALETTE.canvas);
+                                let corners = CornerRadius { nw: CARD_RADIUS - 1, ne: CARD_RADIUS - 1, sw: 0, se: 0 };
+                                catalog_picture(ui, pic_rect.shrink(1.0), None, corners);
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    CARD_RADIUS,
+                                    Stroke::new(1.0, PALETTE.border),
+                                    StrokeKind::Inside,
+                                );
+                            }
+                            continue;
+                        };
                         let selected = lib.catalog_selected.as_deref() == Some(item.id.as_str());
                         let (rect, response) = ui.allocate_exact_size(vec2(card_w, card_h), Sense::click());
                         response.widget_info(|| {
@@ -1203,9 +1213,11 @@ fn plugin_catalog_grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, ope
                         }
                         if response.clicked() {
                             lib.catalog_selected = Some(item.id.clone());
+                            state.plugin_catalog.remember_selected(&item);
                         }
                         if response.double_clicked() {
                             lib.catalog_selected = Some(item.id.clone());
+                            state.plugin_catalog.remember_selected(&item);
                             *open_now = true;
                         }
                     }
@@ -1236,7 +1248,7 @@ fn plugin_catalog_details(ui: &mut Ui, state: &mut AppState, lib: &mut Library) 
         });
         return;
     };
-    let Some(item) = state.plugin_catalog.items.iter().find(|i| i.id == id).cloned() else { return };
+    let Some(item) = state.plugin_catalog.find_item(&id).cloned() else { return };
     egui::ScrollArea::vertical().id_salt("lib-plugin-details").auto_shrink([false, false]).show(ui, |ui| {
         let width = ui.available_width();
         let (rect, _) = ui.allocate_exact_size(vec2(width, width * 2.0 / 3.0), Sense::hover());

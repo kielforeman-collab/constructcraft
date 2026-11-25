@@ -69,8 +69,10 @@ pub enum LoadState {
     Failed(String),
 }
 
-/// Page size fetched per search request; additional pages load on demand.
+/// Page size fetched per search request; arbitrary pages load on demand as the user scrolls.
 const PAGE_SIZE: usize = 60;
+/// Maximum sparse item pages kept in memory (~480 items max, O(1) memory across 36k+ items).
+const MAX_CACHED_PAGES: usize = 8;
 /// Maximum GPU thumbnail textures kept in memory per catalog session.
 const MAX_THUMBNAIL_TEXTURES: usize = 192;
 
@@ -97,9 +99,11 @@ pub struct PluginCatalogClient {
     pub state: LoadState,
     pub categories: Arc<[CatalogCategory]>,
     pub colors: Arc<[String]>,
-    pub items: Arc<[CatalogItem]>,
+    pages: BTreeMap<usize, Arc<[CatalogItem]>>,
+    page_lru: std::collections::VecDeque<usize>,
+    pages_pending: BTreeSet<usize>,
+    selected_cache: Option<CatalogItem>,
     pub total_matches: usize,
-    pub loading_more: bool,
     pub search_error: Option<String>,
     last_query: Option<CatalogQuery>,
     thumbnails: BTreeMap<String, egui::TextureHandle>,
@@ -116,7 +120,7 @@ impl std::fmt::Debug for PluginCatalogClient {
             .field("active", &self.active)
             .field("state", &self.state)
             .field("total_matches", &self.total_matches)
-            .field("loaded_items", &self.items.len())
+            .field("cached_pages", &self.pages.len())
             .field("cached_textures", &self.thumbnails.len())
             .finish()
     }
@@ -188,7 +192,7 @@ impl PluginCatalogClient {
 
             loop {
                 // Drain all currently queued requests so higher-priority work jumps ahead
-                // and stale keystroke searches coalesce into the latest query.
+                // and stale keystroke / scrollbar-drag searches coalesce into the latest page.
                 loop {
                     match req_rx.try_recv() {
                         Ok(req) => {
@@ -270,28 +274,33 @@ impl PluginCatalogClient {
                         self.categories = categories.into();
                         self.colors = colors.into();
                         self.last_query = None;
-                        self.loading_more = false;
+                        self.pages.clear();
+                        self.page_lru.clear();
+                        self.pages_pending.clear();
                     }
                     Ok(WorkerResp::Loaded(Err(msg))) => {
                         self.state = LoadState::Failed(msg);
                     }
                     Ok(WorkerResp::Searched(q, offset, Ok((total, page)))) => {
                         if self.last_query.as_ref() == Some(&q) {
+                            let page_idx = offset / PAGE_SIZE;
                             self.total_matches = total;
-                            self.loading_more = false;
-                            if offset == 0 {
-                                self.items = page.into();
-                            } else if offset == self.items.len() {
-                                let mut combined = Vec::with_capacity(self.items.len() + page.len());
-                                combined.extend_from_slice(&self.items);
-                                combined.extend(page);
-                                self.items = combined.into();
+                            self.pages_pending.remove(&page_idx);
+                            if self.pages.insert(page_idx, page.into()).is_none() {
+                                self.page_lru.push_back(page_idx);
+                                while self.pages.len() > MAX_CACHED_PAGES {
+                                    if let Some(oldest) = self.page_lru.pop_front() {
+                                        self.pages.remove(&oldest);
+                                    } else {
+                                        break;
+                                    }
+                                }
                             }
                             self.search_error = None;
                         }
                     }
-                    Ok(WorkerResp::Searched(_, _, Err(msg))) => {
-                        self.loading_more = false;
+                    Ok(WorkerResp::Searched(_, offset, Err(msg))) => {
+                        self.pages_pending.remove(&(offset / PAGE_SIZE));
                         self.search_error = Some(msg);
                     }
                     Ok(WorkerResp::Thumbnail(id, Ok(Some(image)))) => {
@@ -331,23 +340,54 @@ impl PluginCatalogClient {
         }
         if matches!(self.state, LoadState::Ready { .. }) && self.last_query.as_ref() != Some(query) {
             self.last_query = Some(query.clone());
-            self.loading_more = false;
+            self.pages.clear();
+            self.page_lru.clear();
+            self.pages_pending.clear();
             if let Some(tx) = &self.tx {
+                self.pages_pending.insert(0);
                 let _ = tx.send(WorkerReq::Search(query.clone(), 0));
             }
         }
         prepared
     }
 
-    /// Request the next page of results for the active query.
-    pub fn load_more(&mut self) {
-        if self.loading_more || self.items.len() >= self.total_matches {
+    /// Whether the initial search page for the active query is still in flight.
+    pub fn is_searching_initial(&self) -> bool {
+        self.pages.is_empty() && !self.pages_pending.is_empty()
+    }
+
+    /// Return the cached item at global result index `index`, if its page is resident.
+    pub fn item_at(&self, index: usize) -> Option<&CatalogItem> {
+        let page = index / PAGE_SIZE;
+        let slot = index % PAGE_SIZE;
+        self.pages.get(&page).and_then(|p| p.get(slot))
+    }
+
+    /// Request the sparse page containing `index` if it is not yet cached or in flight.
+    pub fn want_index(&mut self, index: usize) {
+        let page = index / PAGE_SIZE;
+        if self.pages.contains_key(&page) || self.pages_pending.contains(&page) {
             return;
         }
         if let (Some(tx), Some(q)) = (&self.tx, &self.last_query) {
-            self.loading_more = true;
-            let _ = tx.send(WorkerReq::Search(q.clone(), self.items.len()));
+            self.pages_pending.insert(page);
+            let _ = tx.send(WorkerReq::Search(q.clone(), page * PAGE_SIZE));
         }
+    }
+
+    /// Look up an item by `id` across the remembered selection and resident pages.
+    pub fn find_item(&self, id: &str) -> Option<&CatalogItem> {
+        if let Some(sel) = &self.selected_cache
+            && sel.id == id
+        {
+            return Some(sel);
+        }
+        self.pages.values().flat_map(|p| p.iter()).find(|i| i.id == id)
+    }
+
+    /// Retain the selected item so the Details pane survives LRU page eviction.
+    pub fn remember_selected(&mut self, item: &CatalogItem) {
+        self.selected_cache = Some(item.clone());
     }
 
     pub fn thumbnail(&self, item_id: &str) -> Option<&egui::TextureHandle> {
@@ -394,7 +434,12 @@ impl PluginCatalogClient {
         self.state = LoadState::Ready { total: items.len(), notice: String::new() };
         self.categories = categories.into();
         self.colors = colors.into();
-        self.items = items.into();
+        self.pages.clear();
+        self.page_lru.clear();
+        if !items.is_empty() {
+            self.pages.insert(0, items.into());
+            self.page_lru.push_back(0);
+        }
         self.last_query = Some(CatalogQuery::default());
     }
 }
