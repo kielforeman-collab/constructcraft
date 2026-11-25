@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.14.1-ikea.3] - 2026-11-24
+
+### Changed
+
+- Pooled HTTP/TLS connections via a shared `OnceLock<ureq::Agent>` and pre-allocated response buffers from `Content-Length` in `cc_plugins::http`.
+- Decoded plugin catalog JPEG/PNG thumbnails off the UI thread on the background worker and cached GPU textures in a bounded 192-entry LRU (zero per-frame `stat()` syscalls or UI-thread decoding).
+- Stored plugin catalog slices (`categories`, `colors`, `items`) as `Arc<[T]>` to eliminate per-frame heap allocations in the Component Library UI.
+- Paginated plugin catalog search results (60 items per page) with a localized **Load more** button (`lib-load-more` across all 12 locales).
+
 ## [0.14.1-ikea.2] - 2026-11-24
 
 ### Fixed
