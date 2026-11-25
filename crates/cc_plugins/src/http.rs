@@ -288,6 +288,11 @@ pub fn download_cached(
     let mut tmp_name = dest.file_name().unwrap_or_default().to_os_string();
     tmp_name.push(".part");
     let tmp = dest.with_file_name(tmp_name);
+    for target in [&dest, &tmp] {
+        if std::fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err("refusing to write through a symlink in plugin cache".into());
+        }
+    }
     std::fs::write(&tmp, &bytes).map_err(|e| format!("write cache file: {e}"))?;
     std::fs::rename(&tmp, &dest).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);

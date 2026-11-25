@@ -147,7 +147,61 @@ impl PluginCatalogClient {
             plugin.set_cache_root(cache_root.clone());
             plugin.grant(Permissions { network: network_granted, ..Permissions::NONE });
 
-            while let Ok(req) = req_rx.recv() {
+            let mut load_pending = false;
+            let mut prepare_queue = std::collections::VecDeque::new();
+            let mut latest_search: Option<CatalogQuery> = None;
+            let mut thumb_queue = std::collections::VecDeque::new();
+            let mut disconnected = false;
+
+            let enqueue = |req: WorkerReq,
+                           load_pending: &mut bool,
+                           prepare_queue: &mut std::collections::VecDeque<String>,
+                           latest_search: &mut Option<CatalogQuery>,
+                           thumb_queue: &mut std::collections::VecDeque<String>| {
+                match req {
+                    WorkerReq::Load => *load_pending = true,
+                    WorkerReq::Prepare(id) => prepare_queue.push_back(id),
+                    WorkerReq::Search(q) => *latest_search = Some(q),
+                    WorkerReq::Thumbnail(id) => thumb_queue.push_back(id),
+                }
+            };
+
+            loop {
+                // Drain all currently queued requests so higher-priority work jumps ahead
+                // and stale keystroke searches coalesce into the latest query.
+                loop {
+                    match req_rx.try_recv() {
+                        Ok(req) => {
+                            enqueue(req, &mut load_pending, &mut prepare_queue, &mut latest_search, &mut thumb_queue)
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        }
+                    }
+                }
+                let next = if load_pending {
+                    load_pending = false;
+                    Some(WorkerReq::Load)
+                } else if let Some(id) = prepare_queue.pop_front() {
+                    Some(WorkerReq::Prepare(id))
+                } else if let Some(q) = latest_search.take() {
+                    Some(WorkerReq::Search(q))
+                } else if let Some(id) = thumb_queue.pop_front() {
+                    Some(WorkerReq::Thumbnail(id))
+                } else if disconnected {
+                    break;
+                } else {
+                    match req_rx.recv() {
+                        Ok(req) => {
+                            enqueue(req, &mut load_pending, &mut prepare_queue, &mut latest_search, &mut thumb_queue);
+                            continue;
+                        }
+                        Err(_) => break,
+                    }
+                };
+                let Some(req) = next else { continue };
                 let resp = match req {
                     WorkerReq::Load => WorkerResp::Loaded(run_load(&mut plugin, &cid)),
                     WorkerReq::Search(q) => {
