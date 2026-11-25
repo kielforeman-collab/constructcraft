@@ -1055,7 +1055,7 @@ fn plugin_catalog_sidebar(ui: &mut Ui, state: &mut AppState, lib: &mut Library, 
                     if filter_row(ui, &t!("lib-all-kinds"), total, lib.catalog_category.is_none()).clicked() {
                         lib.catalog_category = None;
                     }
-                    for c in &categories {
+                    for c in categories.iter() {
                         let sel = lib.catalog_category.as_deref() == Some(c.id.as_str());
                         if filter_row(ui, &c.name, c.count, sel).clicked() {
                             lib.catalog_category = Some(c.id.clone());
@@ -1072,7 +1072,7 @@ fn plugin_catalog_sidebar(ui: &mut Ui, state: &mut AppState, lib: &mut Library, 
                         .width(ui.available_width().min(176.0))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut lib.catalog_color, None, t!("lib-all-kinds"));
-                            for c in &colors {
+                            for c in colors.iter() {
                                 ui.selectable_value(&mut lib.catalog_color, Some(c.clone()), c);
                             }
                         });

@@ -197,6 +197,11 @@ pub fn read_cached_bytes(
     Ok(Some(bytes))
 }
 
+fn shared_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| ureq::Agent::config_builder().max_redirects(0).http_status_as_error(false).build().into())
+}
+
 /// Fetch `url` over HTTPS, checking `allowed_hosts` on the initial request and
 /// on every redirect, capped at `max_bytes` and `timeout_secs`.
 pub fn fetch_bytes(
@@ -209,18 +214,15 @@ pub fn fetch_bytes(
     let timeout = Duration::from_secs(timeout_secs.clamp(1, MAX_TIMEOUT_SECS));
     check_url_allowed(url, allowed_hosts)?;
 
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(timeout))
-        .max_redirects(0)
-        .http_status_as_error(false)
-        .build()
-        .into();
-
+    let agent = shared_agent();
     let mut current = url.to_string();
     for _ in 0..=MAX_REDIRECTS {
         check_url_allowed(&current, allowed_hosts)?;
         let response = agent
             .get(&current)
+            .config()
+            .timeout_global(Some(timeout))
+            .build()
             .header("User-Agent", concat!("ConstructCraft/", env!("CARGO_PKG_VERSION")))
             .call()
             .map_err(|e| format!("http request failed: {e}"))?;

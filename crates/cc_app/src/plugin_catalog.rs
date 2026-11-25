@@ -10,6 +10,7 @@ use egui::Context;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 /// A category option returned by `load()`.
@@ -89,9 +90,9 @@ pub struct PluginCatalogClient {
     tx: Option<Sender<WorkerReq>>,
     rx: Option<Receiver<WorkerResp>>,
     pub state: LoadState,
-    pub categories: Vec<CatalogCategory>,
-    pub colors: Vec<String>,
-    pub items: Vec<CatalogItem>,
+    pub categories: Arc<[CatalogCategory]>,
+    pub colors: Arc<[String]>,
+    pub items: Arc<[CatalogItem]>,
     pub total_matches: usize,
     pub search_error: Option<String>,
     last_query: Option<CatalogQuery>,
@@ -243,8 +244,8 @@ impl PluginCatalogClient {
                 match rx.try_recv() {
                     Ok(WorkerResp::Loaded(Ok((total, notice, categories, colors)))) => {
                         self.state = LoadState::Ready { total, notice };
-                        self.categories = categories;
-                        self.colors = colors;
+                        self.categories = categories.into();
+                        self.colors = colors.into();
                         self.last_query = None;
                     }
                     Ok(WorkerResp::Loaded(Err(msg))) => {
@@ -253,7 +254,7 @@ impl PluginCatalogClient {
                     Ok(WorkerResp::Searched(q, Ok((total, items)))) => {
                         if self.last_query.as_ref() == Some(&q) {
                             self.total_matches = total;
-                            self.items = items;
+                            self.items = items.into();
                             self.search_error = None;
                         }
                     }
@@ -336,9 +337,9 @@ impl PluginCatalogClient {
         self.active = Some((plugin_id.to_string(), catalog_id.to_string()));
         self.total_matches = items.len();
         self.state = LoadState::Ready { total: items.len(), notice: String::new() };
-        self.categories = categories;
-        self.colors = colors;
-        self.items = items;
+        self.categories = categories.into();
+        self.colors = colors.into();
+        self.items = items.into();
         self.last_query = Some(CatalogQuery::default());
     }
 }
