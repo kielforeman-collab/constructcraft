@@ -4134,3 +4134,4 @@ lib-filter-max-dims = Tamaño máx.
 lib-dim-w = An
 lib-dim-d = Pr
 lib-dim-h = Al
+lib-load-more = Cargar más

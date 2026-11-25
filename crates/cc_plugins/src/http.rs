@@ -237,8 +237,14 @@ pub fn fetch_bytes(
         if !(200..300).contains(&status) {
             return Err(format!("HTTP {status} for {current}"));
         }
+        let hint = response
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<usize>().ok())
+            .map_or(0, |n| n.min(limit));
         let mut reader = response.into_body().into_reader().take(limit as u64 + 1);
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(hint);
         reader.read_to_end(&mut buf).map_err(|e| format!("failed reading response: {e}"))?;
         if buf.len() > limit {
             return Err(format!("response exceeds limit of {limit} bytes"));

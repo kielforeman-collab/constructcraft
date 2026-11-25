@@ -4136,3 +4136,4 @@ lib-filter-max-dims = ຂະໜາດສູງສຸດ
 lib-dim-w = ກ
 lib-dim-d = ລ
 lib-dim-h = ສ
+lib-load-more = ໂຫຼດເພີ່ມ

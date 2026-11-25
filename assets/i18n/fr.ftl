@@ -4134,3 +4134,4 @@ lib-filter-max-dims = Taille max.
 lib-dim-w = L
 lib-dim-d = P
 lib-dim-h = H
+lib-load-more = Charger plus

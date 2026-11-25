@@ -4134,3 +4134,4 @@ lib-filter-max-dims = 最大尺寸
 lib-dim-w = 寬
 lib-dim-d = 深
 lib-dim-h = 高
+lib-load-more = 載入更多

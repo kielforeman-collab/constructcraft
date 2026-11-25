@@ -4134,3 +4134,4 @@ lib-filter-max-dims = Max size
 lib-dim-w = W
 lib-dim-d = D
 lib-dim-h = H
+lib-load-more = Load more

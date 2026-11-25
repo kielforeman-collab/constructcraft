@@ -353,7 +353,7 @@ fn body(
                 max_depth: parse_dim(&lib.catalog_max_d),
                 max_height: parse_dim(&lib.catalog_max_h),
             };
-            if let Some(prepared) = state.plugin_catalog.sync(&query) {
+            if let Some(prepared) = state.plugin_catalog.sync(ui.ctx(), &query) {
                 *prepared_ready = Some(prepared);
             }
         }
@@ -1135,7 +1135,9 @@ fn plugin_catalog_grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, ope
     let card_w = ((width - GAP * (cols.saturating_sub(1)) as f32) / cols as f32).max(CARD * 0.75);
     let pic_h = card_w * 2.0 / 3.0;
     let card_h = pic_h + CARD_TEXT;
-    let rows = items.len().div_ceil(cols);
+    let has_more = items.len() < total;
+    let item_rows = items.len().div_ceil(cols);
+    let rows = item_rows + usize::from(has_more);
 
     egui::ScrollArea::vertical().id_salt("lib-plugin-grid").auto_shrink([false, false]).show_rows(
         ui,
@@ -1143,6 +1145,17 @@ fn plugin_catalog_grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, ope
         rows,
         |ui, range| {
             for r in range {
+                if r >= item_rows {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(12.0);
+                        if state.plugin_catalog.loading_more {
+                            ui.spinner();
+                        } else if ui.button(t!("lib-load-more")).clicked() {
+                            state.plugin_catalog.load_more();
+                        }
+                    });
+                    continue;
+                }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = GAP;
                     for c in 0..cols {
@@ -1158,9 +1171,13 @@ fn plugin_catalog_grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, ope
                             if item.has_thumbnail {
                                 state.plugin_catalog.want_thumbnail(&item.id);
                             }
-                            let thumb = state.plugin_catalog.thumbnail(&item.id).cloned();
                             let corners = CornerRadius { nw: CARD_RADIUS - 1, ne: CARD_RADIUS - 1, sw: 0, se: 0 };
-                            picture(ui, state, lib, pic_rect.shrink(1.0), thumb.as_deref(), None, corners);
+                            catalog_picture(
+                                ui,
+                                pic_rect.shrink(1.0),
+                                state.plugin_catalog.thumbnail(&item.id),
+                                corners,
+                            );
                             let stroke = if selected {
                                 Stroke::new(2.0, PALETTE.accent)
                             } else if response.hovered() {
@@ -1199,6 +1216,19 @@ fn plugin_catalog_grid(ui: &mut Ui, state: &mut AppState, lib: &mut Library, ope
     );
 }
 
+fn catalog_picture(ui: &Ui, rect: Rect, texture: Option<&egui::TextureHandle>, corners: CornerRadius) {
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, corners, PALETTE.paper);
+    if let Some(texture) = texture {
+        let uv = Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0));
+        painter.image(texture.id(), rect.shrink(1.0), uv, egui::Color32::WHITE);
+        return;
+    }
+    let side = (rect.width().min(rect.height()) * 0.3).clamp(16.0, 56.0);
+    let icon = Rect::from_center_size(rect.center(), vec2(side, side));
+    crate::icons::paint(&painter, icon, crate::icons::Icon::Component, PALETTE.border_strong);
+}
+
 fn plugin_catalog_details(ui: &mut Ui, state: &mut AppState, lib: &mut Library) {
     let Some(id) = lib.catalog_selected.clone() else {
         centered(ui, |ui| {
@@ -1213,8 +1243,7 @@ fn plugin_catalog_details(ui: &mut Ui, state: &mut AppState, lib: &mut Library) 
         if item.has_thumbnail {
             state.plugin_catalog.want_thumbnail(&item.id);
         }
-        let thumb = state.plugin_catalog.thumbnail(&item.id).cloned();
-        picture(ui, state, lib, rect, thumb.as_deref(), None, CornerRadius::same(4));
+        catalog_picture(ui, rect, state.plugin_catalog.thumbnail(&item.id), CornerRadius::same(4));
         ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.0, PALETTE.border), StrokeKind::Inside);
         ui.add_space(6.0);
         ui.add(egui::Label::new(theme::title(&item.name)).wrap());

@@ -69,22 +69,27 @@ pub enum LoadState {
     Failed(String),
 }
 
+/// Page size fetched per search request; additional pages load on demand.
+const PAGE_SIZE: usize = 60;
+/// Maximum GPU thumbnail textures kept in memory per catalog session.
+const MAX_THUMBNAIL_TEXTURES: usize = 192;
+
 enum WorkerReq {
     Load,
-    Search(CatalogQuery),
+    Search(CatalogQuery, usize),
     Thumbnail(String),
     Prepare(String),
 }
 
 enum WorkerResp {
     Loaded(Result<(usize, String, Vec<CatalogCategory>, Vec<String>), String>),
-    Searched(CatalogQuery, Result<(usize, Vec<CatalogItem>), String>),
-    Thumbnail(String, Result<Option<PathBuf>, String>),
+    Searched(CatalogQuery, usize, Result<(usize, Vec<CatalogItem>), String>),
+    Thumbnail(String, Result<Option<egui::ColorImage>, String>),
     Prepared(String, Result<PreparedLoad, String>),
 }
 
 /// State of one active plugin catalog source in `AppState`.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct PluginCatalogClient {
     active: Option<(String, String)>,
     tx: Option<Sender<WorkerReq>>,
@@ -94,13 +99,27 @@ pub struct PluginCatalogClient {
     pub colors: Arc<[String]>,
     pub items: Arc<[CatalogItem]>,
     pub total_matches: usize,
+    pub loading_more: bool,
     pub search_error: Option<String>,
     last_query: Option<CatalogQuery>,
-    thumbnails: BTreeMap<String, PathBuf>,
+    thumbnails: BTreeMap<String, egui::TextureHandle>,
+    thumbnail_lru: std::collections::VecDeque<String>,
     thumbnails_pending: BTreeSet<String>,
     thumbnails_failed: BTreeSet<String>,
     pub preparing: Option<String>,
     pub prepare_error: Option<String>,
+}
+
+impl std::fmt::Debug for PluginCatalogClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginCatalogClient")
+            .field("active", &self.active)
+            .field("state", &self.state)
+            .field("total_matches", &self.total_matches)
+            .field("loaded_items", &self.items.len())
+            .field("cached_textures", &self.thumbnails.len())
+            .finish()
+    }
 }
 
 impl PluginCatalogClient {
@@ -150,19 +169,19 @@ impl PluginCatalogClient {
 
             let mut load_pending = false;
             let mut prepare_queue = std::collections::VecDeque::new();
-            let mut latest_search: Option<CatalogQuery> = None;
+            let mut latest_search: Option<(CatalogQuery, usize)> = None;
             let mut thumb_queue = std::collections::VecDeque::new();
             let mut disconnected = false;
 
             let enqueue = |req: WorkerReq,
                            load_pending: &mut bool,
                            prepare_queue: &mut std::collections::VecDeque<String>,
-                           latest_search: &mut Option<CatalogQuery>,
+                           latest_search: &mut Option<(CatalogQuery, usize)>,
                            thumb_queue: &mut std::collections::VecDeque<String>| {
                 match req {
                     WorkerReq::Load => *load_pending = true,
                     WorkerReq::Prepare(id) => prepare_queue.push_back(id),
-                    WorkerReq::Search(q) => *latest_search = Some(q),
+                    WorkerReq::Search(q, offset) => *latest_search = Some((q, offset)),
                     WorkerReq::Thumbnail(id) => thumb_queue.push_back(id),
                 }
             };
@@ -187,8 +206,8 @@ impl PluginCatalogClient {
                     Some(WorkerReq::Load)
                 } else if let Some(id) = prepare_queue.pop_front() {
                     Some(WorkerReq::Prepare(id))
-                } else if let Some(q) = latest_search.take() {
-                    Some(WorkerReq::Search(q))
+                } else if let Some((q, offset)) = latest_search.take() {
+                    Some(WorkerReq::Search(q, offset))
                 } else if let Some(id) = thumb_queue.pop_front() {
                     Some(WorkerReq::Thumbnail(id))
                 } else if disconnected {
@@ -205,12 +224,15 @@ impl PluginCatalogClient {
                 let Some(req) = next else { continue };
                 let resp = match req {
                     WorkerReq::Load => WorkerResp::Loaded(run_load(&mut plugin, &cid)),
-                    WorkerReq::Search(q) => {
-                        let res = run_search(&mut plugin, &cid, &q);
-                        WorkerResp::Searched(q, res)
+                    WorkerReq::Search(q, offset) => {
+                        let res = run_search(&mut plugin, &cid, &q, offset);
+                        WorkerResp::Searched(q, offset, res)
                     }
                     WorkerReq::Thumbnail(id) => {
-                        let res = plugin.catalog_thumbnail(&cid, &id).map_err(|e| e.message);
+                        let res = plugin
+                            .catalog_thumbnail(&cid, &id)
+                            .map_err(|e| e.message)
+                            .map(|opt| opt.and_then(|p| decode_thumbnail_file(&p)));
                         WorkerResp::Thumbnail(id, res)
                     }
                     WorkerReq::Prepare(id) => {
@@ -235,9 +257,10 @@ impl PluginCatalogClient {
         *self = Self::default();
     }
 
-    /// Poll worker responses, trigger search when `query` changes, and return
-    /// a [`PreparedLoad`] if a requested item just finished downloading.
-    pub fn sync(&mut self, query: &CatalogQuery) -> Option<PreparedLoad> {
+    /// Poll worker responses, trigger search when `query` changes, upload
+    /// worker-decoded thumbnails to GPU textures, and return a [`PreparedLoad`]
+    /// if a requested item just finished downloading.
+    pub fn sync(&mut self, ctx: &Context, query: &CatalogQuery) -> Option<PreparedLoad> {
         let mut prepared = None;
         if let Some(rx) = &self.rx {
             loop {
@@ -247,23 +270,43 @@ impl PluginCatalogClient {
                         self.categories = categories.into();
                         self.colors = colors.into();
                         self.last_query = None;
+                        self.loading_more = false;
                     }
                     Ok(WorkerResp::Loaded(Err(msg))) => {
                         self.state = LoadState::Failed(msg);
                     }
-                    Ok(WorkerResp::Searched(q, Ok((total, items)))) => {
+                    Ok(WorkerResp::Searched(q, offset, Ok((total, page)))) => {
                         if self.last_query.as_ref() == Some(&q) {
                             self.total_matches = total;
-                            self.items = items.into();
+                            self.loading_more = false;
+                            if offset == 0 {
+                                self.items = page.into();
+                            } else if offset == self.items.len() {
+                                let mut combined = Vec::with_capacity(self.items.len() + page.len());
+                                combined.extend_from_slice(&self.items);
+                                combined.extend(page);
+                                self.items = combined.into();
+                            }
                             self.search_error = None;
                         }
                     }
-                    Ok(WorkerResp::Searched(_, Err(msg))) => {
+                    Ok(WorkerResp::Searched(_, _, Err(msg))) => {
+                        self.loading_more = false;
                         self.search_error = Some(msg);
                     }
-                    Ok(WorkerResp::Thumbnail(id, Ok(Some(path)))) => {
+                    Ok(WorkerResp::Thumbnail(id, Ok(Some(image)))) => {
                         self.thumbnails_pending.remove(&id);
-                        self.thumbnails.insert(id, path);
+                        let tex = ctx.load_texture(format!("catalog-thumb-{id}"), image, egui::TextureOptions::LINEAR);
+                        if self.thumbnails.insert(id.clone(), tex).is_none() {
+                            self.thumbnail_lru.push_back(id);
+                            while self.thumbnails.len() > MAX_THUMBNAIL_TEXTURES {
+                                if let Some(oldest) = self.thumbnail_lru.pop_front() {
+                                    self.thumbnails.remove(&oldest);
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
                     }
                     Ok(WorkerResp::Thumbnail(id, Ok(None) | Err(_))) => {
                         self.thumbnails_pending.remove(&id);
@@ -288,14 +331,26 @@ impl PluginCatalogClient {
         }
         if matches!(self.state, LoadState::Ready { .. }) && self.last_query.as_ref() != Some(query) {
             self.last_query = Some(query.clone());
+            self.loading_more = false;
             if let Some(tx) = &self.tx {
-                let _ = tx.send(WorkerReq::Search(query.clone()));
+                let _ = tx.send(WorkerReq::Search(query.clone(), 0));
             }
         }
         prepared
     }
 
-    pub fn thumbnail(&self, item_id: &str) -> Option<&PathBuf> {
+    /// Request the next page of results for the active query.
+    pub fn load_more(&mut self) {
+        if self.loading_more || self.items.len() >= self.total_matches {
+            return;
+        }
+        if let (Some(tx), Some(q)) = (&self.tx, &self.last_query) {
+            self.loading_more = true;
+            let _ = tx.send(WorkerReq::Search(q.clone(), self.items.len()));
+        }
+    }
+
+    pub fn thumbnail(&self, item_id: &str) -> Option<&egui::TextureHandle> {
         self.thumbnails.get(item_id)
     }
 
@@ -344,6 +399,13 @@ impl PluginCatalogClient {
     }
 }
 
+fn decode_thumbnail_file(path: &Path) -> Option<egui::ColorImage> {
+    let bytes = std::fs::read(path).ok()?;
+    let decoded = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let size = [decoded.width() as usize, decoded.height() as usize];
+    Some(egui::ColorImage::from_rgba_unmultiplied(size, decoded.as_raw()))
+}
+
 fn run_load(plugin: &mut Plugin, cid: &str) -> Result<(usize, String, Vec<CatalogCategory>, Vec<String>), String> {
     let val = plugin.catalog_load(cid).map_err(|e| e.message)?;
     let total = val["total"].as_u64().unwrap_or(0) as usize;
@@ -365,7 +427,12 @@ fn run_load(plugin: &mut Plugin, cid: &str) -> Result<(usize, String, Vec<Catalo
     Ok((total, notice, categories, colors))
 }
 
-fn run_search(plugin: &mut Plugin, cid: &str, q: &CatalogQuery) -> Result<(usize, Vec<CatalogItem>), String> {
+fn run_search(
+    plugin: &mut Plugin,
+    cid: &str,
+    q: &CatalogQuery,
+    offset: usize,
+) -> Result<(usize, Vec<CatalogItem>), String> {
     let mut map = serde_json::Map::new();
     map.insert("text".into(), json!(q.text));
     if let Some(category) = &q.category {
@@ -383,8 +450,8 @@ fn run_search(plugin: &mut Plugin, cid: &str, q: &CatalogQuery) -> Result<(usize
     if let Some(h) = q.max_height {
         map.insert("max_height".into(), json!(h));
     }
-    map.insert("offset".into(), json!(0));
-    map.insert("limit".into(), json!(120));
+    map.insert("offset".into(), json!(offset));
+    map.insert("limit".into(), json!(PAGE_SIZE));
     let payload = Value::Object(map);
     let val = plugin.catalog_search(cid, payload).map_err(|e| e.message)?;
     let total = val["total"].as_u64().unwrap_or(0) as usize;

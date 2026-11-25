@@ -4134,3 +4134,4 @@ lib-filter-max-dims = 最大サイズ
 lib-dim-w = 幅
 lib-dim-d = 奥行
 lib-dim-h = 高
+lib-load-more = さらに読み込む

@@ -4135,3 +4135,4 @@ lib-filter-max-dims = Макс. розмір
 lib-dim-w = Ш
 lib-dim-d = Г
 lib-dim-h = В
+lib-load-more = Завантажити ще
