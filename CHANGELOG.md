@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.14.1-ikea.4] - 2026-11-24
+
+### Changed
+
+- Replaced *Load more* pagination in the Component Library plugin catalog with true sparse virtualized windowing over `total_matches`: the scrollbar spans all 36,447 items, arbitrary 60-item pages load on demand inside a bounded 8-page LRU cache (O(1) memory), and the Details pane retains the selected item across LRU evictions.
+
 ## [0.14.1-ikea.3] - 2026-11-24
 
 ### Changed
